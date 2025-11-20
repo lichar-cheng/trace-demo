@@ -1,0 +1,28 @@
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
+
+class KolPostIn(BaseModel):
+    kol_handle: str
+    kol_name: Optional[str] = None
+    kol_avatar_url: Optional[str] = None
+    posted_at: Optional[datetime] = None
+    text: Optional[str] = None
+    image_urls: List[str] = []
+    likes: Optional[int] = 0
+    retweets: Optional[int] = 0
+    replies: Optional[int] = 0
+    url: str
+
+class KolPostList(BaseModel):
+    items: List[KolPostIn]
+
+class BrowseLogIn(BaseModel):
+    visited_at: Optional[datetime] = None
+    url: str
+    kol_handle: Optional[str] = None
+    kol_post_url: Optional[str] = None
+    session_id: Optional[str] = None
+
+class BrowseLogList(BaseModel):
+    items: List[BrowseLogIn]

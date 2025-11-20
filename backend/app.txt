@@ -1,0 +1,176 @@
+import os
+import re
+from typing import Optional
+from fastapi import FastAPI, Depends, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
+import httpx
+from sqlalchemy.orm import Session
+
+# 将 models.txt 与 schemas.txt 动态加载到当前命名空间
+BASE_DIR = os.path.dirname(__file__)
+with open(os.path.join(BASE_DIR, "models.txt"), "r", encoding="utf-8") as f:
+    exec(f.read(), globals())
+with open(os.path.join(BASE_DIR, "schemas.txt"), "r", encoding="utf-8") as f:
+    exec(f.read(), globals())
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+init_db()
+
+@app.post("/api/posts/bulk")
+def create_posts(payload: KolPostList, db: Session = Depends(get_db)):
+    created = 0
+    for item in payload.items:
+        exists = db.query(KolPost).filter(KolPost.url == item.url).first()
+        if exists:
+            continue
+        post = KolPost(
+            kol_handle=item.kol_handle,
+            kol_name=item.kol_name,
+            kol_avatar_url=item.kol_avatar_url,
+            posted_at=item.posted_at,
+            text=item.text,
+            image_urls=",".join(item.image_urls),
+            likes=item.likes or 0,
+            retweets=item.retweets or 0,
+            replies=item.replies or 0,
+            url=item.url,
+        )
+        db.add(post)
+        created += 1
+    db.commit()
+    return {"created": created}
+
+@app.get("/api/posts")
+def list_posts(
+    kol_handle: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=200),
+    db: Session = Depends(get_db),
+):
+    q = db.query(KolPost)
+    if kol_handle:
+        q = q.filter(KolPost.kol_handle == kol_handle)
+    items = q.order_by(KolPost.id.desc()).limit(limit).all()
+    return [
+        {
+            "id": i.id,
+            "kol_handle": i.kol_handle,
+            "kol_name": i.kol_name,
+            "kol_avatar_url": i.kol_avatar_url,
+            "posted_at": i.posted_at,
+            "text": i.text,
+            "image_urls": i.image_urls.split(",") if i.image_urls else [],
+            "likes": i.likes,
+            "retweets": i.retweets,
+            "replies": i.replies,
+            "url": i.url,
+            "created_at": i.created_at,
+        }
+        for i in items
+    ]
+
+@app.post("/api/browse-log")
+def create_browse_logs(payload: BrowseLogList, db: Session = Depends(get_db)):
+    for item in payload.items:
+        log = BrowseLog(
+            visited_at=item.visited_at,
+            url=item.url,
+            kol_handle=item.kol_handle,
+            kol_post_url=item.kol_post_url,
+            session_id=item.session_id,
+        )
+        db.add(log)
+    db.commit()
+    return {"created": len(payload.items)}
+
+@app.get("/api/browse-log")
+def list_browse_logs(
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    items = db.query(BrowseLog).order_by(BrowseLog.id.desc()).limit(limit).all()
+    return [
+        {
+            "id": i.id,
+            "visited_at": i.visited_at,
+            "url": i.url,
+            "kol_handle": i.kol_handle,
+            "kol_post_url": i.kol_post_url,
+            "session_id": i.session_id,
+        }
+        for i in items
+    ]
+
+def inject_script(html: str) -> str:
+    script = (
+        "<script>"
+        "const send=(t,p)=>parent.postMessage({type:t,payload:p},'*');"
+        "const norm=(s)=>{if(!s)return'';return s.replace(/\\s+/g,' ').trim();};"
+        "const selTweets=()=>Array.from(document.querySelectorAll('a[href*=\\"/status/\\"]')).map(a=>{"
+        "const abs=a.href;"
+        "const m=abs.match(/https?:\\/\\/twitter\\.com\\/([^\\/]+)\\/status\\/(\\d+)/);"
+        "const handle=m?m[1]:'';"
+        "let article=a.closest('article');"
+        "let text='';"
+        "if(article){text=norm(article.innerText);}"
+        "let avatar='';"
+        "const img=article?article.querySelector('img[src*=\\"twimg\\"]'):null;"
+        "if(img){avatar=img.src}"
+        "let likes=0,reposts=0,replies=0;"
+        "Array.from(article?article.querySelectorAll('[aria-label]'):[]).forEach(el=>{"
+        "const l=el.getAttribute('aria-label')||'';"
+        "const n=parseInt((l.match(/\\\d+/)||['0'])[0]);"
+        "if(/Like/i.test(l))likes=n;"
+        "if(/Reply/i.test(l))replies=n;"
+        "if(/Repost|Retweet/i.test(l))reposts=n;"
+        "});"
+        "let imgs=[];"
+        "Array.from(article?article.querySelectorAll('img[src*=\\"twimg.com\\"]'):[]).forEach(i=>{imgs.push(i.src)});"
+        "return {url:abs,kol_handle:handle,kol_name:handle,kol_avatar_url:avatar,text:text,image_urls:imgs,likes:likes,retweets:reposts,replies:replies};"
+        "});"
+        "const pushVisible=()=>{const items=selTweets();send('tweets_visible',{items});};"
+        "const onNav=()=>{send('browse',{url:location.href});};"
+        "const mo=new MutationObserver(()=>{pushVisible()});"
+        "mo.observe(document.documentElement,{childList:true,subtree:true});"
+        "document.addEventListener('click',e=>{const a=e.target.closest('a');if(a&&a.href.includes('/status/')){setTimeout(()=>pushVisible(),500);}});"
+        "setInterval(()=>pushVisible(),3000);"
+        "onNav();"
+        "</script>"
+    )
+    head_inject = "<base href='/proxy/x/'><meta name='viewport' content='width=device-width, initial-scale=1'>"
+    return re.sub(r"</head>", head_inject + script + "</head>", html, flags=re.IGNORECASE)
+
+@app.api_route("/proxy/x/{path:path}", methods=["GET"])
+async def proxy_x(path: str = "", q: Optional[str] = None):
+    url = f"https://twitter.com/{path}"
+    params = {}
+    if q:
+        params["q"] = q
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+        r = await client.get(url, params=params, headers={"user-agent": "Mozilla/5.0"})
+        content_type = r.headers.get("content-type", "text/html")
+        body = r.content
+        if "text/html" in content_type:
+            html = inject_script(r.text)
+            return Response(content=html, media_type="text/html", headers={"x-frame-options": "ALLOWALL"})
+        return Response(content=body, media_type=content_type)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

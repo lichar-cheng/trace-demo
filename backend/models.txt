@@ -1,0 +1,39 @@
+from sqlalchemy import Column, Integer, String, Text, DateTime, create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.sql import func
+import os
+
+BASE_DIR = os.path.dirname(__file__)
+DB_PATH = os.path.join(BASE_DIR, "data.db")
+DATABASE_URL = f"sqlite:///{DB_PATH}"
+
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+class KolPost(Base):
+    __tablename__ = "kol_posts"
+    id = Column(Integer, primary_key=True, index=True)
+    kol_handle = Column(String(255), index=True)
+    kol_name = Column(String(255))
+    kol_avatar_url = Column(Text)
+    posted_at = Column(DateTime, nullable=True)
+    text = Column(Text)
+    image_urls = Column(Text)
+    likes = Column(Integer, default=0)
+    retweets = Column(Integer, default=0)
+    replies = Column(Integer, default=0)
+    url = Column(Text, unique=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+class BrowseLog(Base):
+    __tablename__ = "browse_logs"
+    id = Column(Integer, primary_key=True, index=True)
+    visited_at = Column(DateTime, server_default=func.now())
+    url = Column(Text, index=True)
+    kol_handle = Column(String(255), index=True)
+    kol_post_url = Column(Text)
+    session_id = Column(String(255), index=True)
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
