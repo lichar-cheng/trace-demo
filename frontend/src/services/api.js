@@ -19,6 +19,7 @@ export const api = {
 
   youtubeImport(urls, channel_name){ return axios.post(`${apiBase}/api/youtube/import`, { urls, channel_name }); },
   youtubeList(params){ return axios.get(`${apiBase}/api/youtube/items`, { params }); },
+  youtubeTask(task_id){ return axios.get(`${apiBase}/api/youtube/tasks/${task_id}`); },
   youtubeAnalyze(item_ids){ return axios.post(`${apiBase}/api/youtube/analyze`, { item_ids }); },
 
   cryptoPull(payload){ return axios.post(`${apiBase}/api/crypto/pull`, payload); },
@@ -29,5 +30,6 @@ export const api = {
   chartAnalyze(item_id){ return axios.post(`${apiBase}/api/charts/analyze`, { item_id }); },
   chartList(params){ return axios.get(`${apiBase}/api/charts/snapshots`, { params }); },
 
+  youtubeDelete(item_ids){ return axios.post(`${apiBase}/api/youtube/delete`, { item_ids }); },
   runBackup(target_dir){ return axios.post(`${apiBase}/api/backup/run`, { target_dir }); }
 }

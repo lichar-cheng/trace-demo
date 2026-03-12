@@ -105,7 +105,12 @@ createApp({
     };
 
     const loadYoutube = async () => safeRun(async () => {
-      const { data } = await api.youtubeList({ limit: 100 });
+      const params = { limit: 100 };
+      if (state.youtube.authorFilter.trim()) params.author_name = state.youtube.authorFilter.trim();
+      if (state.youtube.startTime) params.start_time = new Date(state.youtube.startTime).toISOString();
+      if (state.youtube.endTime) params.end_time = new Date(state.youtube.endTime).toISOString();
+      if (state.youtube.statusFilter) params.analysis_status = state.youtube.statusFilter;
+      const { data } = await api.youtubeList(params);
       state.youtube.items = data;
       setStatus(`YouTube 条目 ${data.length} 条`);
     });
@@ -119,9 +124,18 @@ createApp({
     });
 
     const analyzeYoutube = async (item) => safeRun(async () => {
-      await api.youtubeAnalyze([item.id]);
-      await loadYoutube();
-      setStatus(`YouTube #${item.id} 分析完成`);
+      const { data } = await api.youtubeAnalyze([item.id]);
+      await pollYoutubeTask(data.task_id);
+    });
+
+    const analyzeAllYoutube = async () => safeRun(async () => {
+      const ids = state.youtube.items.filter(i => i.analysis_status !== 'done').map(i => i.id);
+      if (!ids.length) {
+        setStatus('没有需要处理的 YouTube 条目');
+        return;
+      }
+      const { data } = await api.youtubeAnalyze(ids);
+      await pollYoutubeTask(data.task_id);
     });
 
     const loadCrypto = async () => safeRun(async () => {
@@ -207,7 +221,31 @@ createApp({
       await loadTopic();
       setStatus('主题创建成功');
     });
-
+    const deleteYoutube = async (item) => safeRun(async () => {
+      await api.youtubeDelete([item.id]);
+      await loadYoutube();
+      setStatus(`YouTube #${item.id} 已删除`);
+    });
+    const pollYoutubeTask = async (taskId) => {
+      state.youtube.taskId = taskId;
+      state.youtube.progress = { status: 'queued', total: 0, completed: 0, failed: 0 };
+      const timer = setInterval(async () => {
+        try {
+          const { data } = await api.youtubeTask(taskId);
+          state.youtube.progress = data;
+          const currentUrl = data.current_item?.url || '';
+          setStatus(`YouTube 处理中: ${data.completed || 0}/${data.total || 0} ${currentUrl}`);
+          await loadYoutube();
+          if (data.status === 'done') {
+            clearInterval(timer);
+            setStatus(`YouTube 任务完成: ${data.completed || 0}/${data.total || 0}`);
+          }
+        } catch (e) {
+          clearInterval(timer);
+          setStatus(`YouTube 任务查询失败: ${e?.message || 'unknown error'}`);
+        }
+      }, 1500);
+    };
     const analyzeTopic = async (item) => safeRun(async () => {
       await api.analyzeTopic(item.id, state.topic.focus);
       await loadTopic();
@@ -247,6 +285,8 @@ createApp({
       xExport,
       importYoutube,
       analyzeYoutube,
+      deleteYoutube,
+      analyzeAllYoutube,
       pullCrypto,
       backfillCrypto,
       captureChart,
@@ -352,22 +392,35 @@ createApp({
           <div class="toolbar">
             <input v-model="state.youtube.urlInput" placeholder="一行一个 YouTube URL" />
             <input v-model="state.youtube.channelName" placeholder="Channel Name" style="max-width:220px" />
-            <button class="action primary" @click="importYoutube">Process</button>
+            <button class="action primary" @click="importYoutube">Import Metadata</button>
+            <button class="action" @click="analyzeAllYoutube">Run Pending</button>
           </div>
-          <div class="metrics">
-            <div class="metric"><strong>{{ state.youtube.items.length }}</strong><span>Total Videos</span></div>
-            <div class="metric"><strong>{{ state.youtube.items.filter(i=>i.analysis_status!=='done').length }}</strong><span>Subtitle Scraping</span></div>
-            <div class="metric"><strong>{{ state.youtube.items.filter(i=>i.analysis_status==='done').length }}</strong><span>Ready For Analysis</span></div>
+          <div class="toolbar">
+            <input v-model="state.youtube.authorFilter" placeholder="按发布人筛选" style="max-width:220px" />
+            <input v-model="state.youtube.startTime" type="datetime-local" style="max-width:220px" />
+            <input v-model="state.youtube.endTime" type="datetime-local" style="max-width:220px" />
+            <select v-model="state.youtube.statusFilter" style="max-width:180px">
+              <option value="">全部状态</option>
+              <option value="pending">pending</option>
+              <option value="queued">queued</option>
+              <option value="downloading">downloading</option>
+              <option value="done">done</option>
+              <option value="failed">failed</option>
+            </select>
+            <button class="action" @click="loadYoutube">Filter</button>
           </div>
-          <div class="card list">
-            <div v-for="item in state.youtube.items" :key="item.id" class="item">
-              <div class="title">{{ item.title }}</div>
-              <div class="muted">{{ item.url }}</div>
-              <div class="two-col">
-                <div><h4>Cleaned Subtitles</h4><p>{{ item.content_cleaned || '待处理' }}</p></div>
-                <div><h4>AI Analysis</h4><p>{{ item.analysis_result || '待分析' }}</p></div>
-              </div>
-              <button class="action" @click="analyzeYoutube(item)">Analyze</button>
+          <div class="card" v-if="state.youtube.progress">
+            <div class="title">Task: {{ state.youtube.taskId }}</div>
+            <div class="muted">
+              状态 {{ state.youtube.progress.status }} /
+              完成 {{ state.youtube.progress.completed || 0 }} /
+              总数 {{ state.youtube.progress.total || 0 }} /
+              失败 {{ state.youtube.progress.failed || 0 }}
+            </div>
+            <div class="muted">状态: {{ item.analysis_status }}</div>
+            <div class="muted" v-if="item.analysis_result">{{ item.analysis_result }}</div>
+            <div class="muted" v-if="state.youtube.progress.current_item">
+              当前处理: {{ state.youtube.progress.current_item.url }}
             </div>
           </div>
         </section>
