@@ -111,6 +111,7 @@ def list_posts():
             "kol_avatar_url": i.kol_avatar_url,
             "posted_at": i.posted_at.isoformat() if i.posted_at else None,
             "text": i.text,
+            "translated_text": None,
             "image_urls": i.image_urls.split(",") if i.image_urls else [],
             "likes": i.likes,
             "retweets": i.retweets,
