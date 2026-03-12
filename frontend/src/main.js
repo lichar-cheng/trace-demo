@@ -1,144 +1,409 @@
-const { createApp, ref, reactive, onMounted, defineComponent } = Vue;
+// Last Edited: 2026-03-12
+const { createApp, reactive, computed, onMounted } = Vue;
+import { api } from './services/api.js';
 
-const createStore = () => {
-  const posts = reactive([]);
-  const logs = reactive([]);
-  const sessionId = Math.random().toString(36).slice(2);
-  const addPosts = (items) => {
-    items.forEach(i=>{
-      if(!i.url) return;
-      if(!posts.find(p=>p.url===i.url)) posts.push(i);
-    })
-  }
-  const addBrowse = (url, kol_handle) => {
-    logs.push({ visited_at: new Date().toISOString(), url, kol_handle, kol_post_url: url, session_id: sessionId })
-  }
-  return { posts, logs, addPosts, addBrowse, sessionId }
-}
-const store = createStore()
+createApp({
+  setup() {
+    const state = reactive({
+      view: 'x',
+      status: '',
+      loading: false,
+      x: {
+        posts: [],
+        activeIndex: 0,
+        keyword: '',
+        compareInput: '',
+      },
+      youtube: {
+        urlInput: '',
+        channelName: 'manual_channel',
+        items: [],
+      },
+      crypto: {
+        symbol: 'BTCUSDT',
+        metric_name: 'open_interest',
+        market_type: 'future',
+        interval: '1h',
+        value: 0,
+        items: [],
+      },
+      charts: {
+        page_url: 'https://www.tradingview.com',
+        platform: 'tradingview',
+        symbol: 'BTCUSDT',
+        timeframe: '4h',
+        image_path: '',
+        items: [],
+      },
+      topic: {
+        topic_name: '',
+        topic_type: 'event',
+        description: '',
+        focus: 'global market',
+        topics: [],
+        entities: [],
+      },
+    });
 
-const EmbeddedBrowser = defineComponent({
-  name: 'EmbeddedBrowser',
-  props: { startPath: { type: String, default: 'home' } },
-  setup(props){
-    const frameRef = ref(null);
-    const storeRef = store;
-    const src = ref(`/proxy/x/${props.startPath}`);
-    const onMsg = (e)=>{
-      const d = e.data;
-      if(!d||!d.type) return;
-      if(d.type==='tweets_visible'){
-        const items = (d.payload?.items||[]).map(x=>({
-          kol_handle: x.kol_handle||'',
-          kol_name: x.kol_name||'',
-          kol_avatar_url: x.kol_avatar_url||'',
-          posted_at: null,
-          text: x.text||'',
-          image_urls: x.image_urls||[],
-          likes: x.likes||0,
-          retweets: x.retweets||0,
-          replies: x.replies||0,
-          url: x.url
-        }))
-        store.addPosts(items)
+    const xFiltered = computed(() => {
+      const key = state.x.keyword.trim().toLowerCase();
+      return state.x.posts.filter((p) => !key || [p.text, p.kol_name, p.kol_handle, p.url].some((v) => (v || '').toLowerCase().includes(key)));
+    });
+    const xActive = computed(() => xFiltered.value[state.x.activeIndex] || null);
+
+    const setStatus = (msg) => state.status = `[${new Date().toLocaleTimeString()}] ${msg}`;
+
+    const safeRun = async (fn) => {
+      state.loading = true;
+      try {
+        await fn();
+      } catch (e) {
+        setStatus(`失败：${e?.response?.data?.error || e.message}`);
+      } finally {
+        state.loading = false;
       }
-      if(d.type==='browse'){
-        const url = d.payload?.url
-        store.addBrowse(url, '')
+    };
+
+    const loadX = async () => safeRun(async () => {
+      const { data } = await api.listPosts({ limit: 300 });
+      state.x.posts = data;
+      state.x.activeIndex = 0;
+      setStatus(`X 数据加载 ${data.length} 条`);
+    });
+
+    const xCompare = async () => safeRun(async () => {
+      const urls = state.x.compareInput.split('\n').map((s) => s.trim()).filter(Boolean);
+      const { data } = await api.compareUrls(urls);
+      setStatus(`链接对比完成：存在 ${data.exists.length}，缺失 ${data.missing.length}`);
+    });
+
+    const xDelete = async () => {
+      if (!xActive.value) return;
+      await safeRun(async () => {
+        await api.trashBatch({ urls: [xActive.value.url] });
+        await loadX();
+        setStatus('删除成功');
+      });
+    };
+
+    const xPushTg = async () => {
+      if (!xActive.value) return;
+      await safeRun(async () => {
+        await api.pushTg(xActive.value.url);
+        setStatus('已标记推送 Telegram');
+      });
+    };
+
+    const xExport = () => {
+      const blob = new Blob([JSON.stringify(xFiltered.value, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `x-library-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setStatus('导出完成');
+    };
+
+    const loadYoutube = async () => safeRun(async () => {
+      const { data } = await api.youtubeList({ limit: 100 });
+      state.youtube.items = data;
+      setStatus(`YouTube 条目 ${data.length} 条`);
+    });
+
+    const importYoutube = async () => safeRun(async () => {
+      const urls = state.youtube.urlInput.split('\n').map((s) => s.trim()).filter(Boolean);
+      if (!urls.length) { setStatus('请输入 YouTube URL'); return; }
+      const { data } = await api.youtubeImport(urls, state.youtube.channelName);
+      await loadYoutube();
+      setStatus(`YouTube 导入 ${data.created} 条`);
+    });
+
+    const analyzeYoutube = async (item) => safeRun(async () => {
+      await api.youtubeAnalyze([item.id]);
+      await loadYoutube();
+      setStatus(`YouTube #${item.id} 分析完成`);
+    });
+
+    const loadCrypto = async () => safeRun(async () => {
+      const { data } = await api.cryptoList({ limit: 100 });
+      state.crypto.items = data;
+      setStatus(`加密指标 ${data.length} 条`);
+    });
+
+    const pullCrypto = async () => safeRun(async () => {
+      const payload = {
+        metric_name: state.crypto.metric_name,
+        symbol: state.crypto.symbol,
+        market_type: state.crypto.market_type,
+        interval: state.crypto.interval,
+        value: Number(state.crypto.value || 0),
+      };
+      await api.cryptoPull(payload);
+      await loadCrypto();
+      setStatus('加密指标已写入');
+    });
+
+    const backfillCrypto = async () => safeRun(async () => {
+      const now = new Date();
+      const start = new Date(now.getTime() - 3600_000 * 4);
+      await api.cryptoBackfill({
+        metric_name: state.crypto.metric_name,
+        symbol: state.crypto.symbol,
+        market_type: state.crypto.market_type,
+        interval: state.crypto.interval,
+        start_time: start.toISOString(),
+        end_time: now.toISOString(),
+        values: [100, 120, 110, 130],
+      });
+      await loadCrypto();
+      setStatus('历史补全写入完成');
+    });
+
+    const loadCharts = async () => safeRun(async () => {
+      const { data } = await api.chartList({ limit: 100 });
+      state.charts.items = data;
+      setStatus(`图表快照 ${data.length} 条`);
+    });
+
+    const captureChart = async () => safeRun(async () => {
+      const payload = {
+        page_url: state.charts.page_url,
+        platform: state.charts.platform,
+        symbol: state.charts.symbol,
+        timeframe: state.charts.timeframe,
+        image_path: state.charts.image_path || `data/charts/snapshots/${Date.now()}.png`,
+      };
+      await api.chartCapture(payload);
+      await loadCharts();
+      setStatus('图表快照任务已创建');
+    });
+
+    const analyzeChart = async (item) => safeRun(async () => {
+      await api.chartAnalyze(item.id);
+      await loadCharts();
+      setStatus(`图表 #${item.id} 分析完成`);
+    });
+
+    const loadTopic = async () => safeRun(async () => {
+      const [{ data: topics }, { data: entities }] = await Promise.all([api.listTopics(), api.listEntities()]);
+      state.topic.topics = topics;
+      state.topic.entities = entities;
+      setStatus(`主题 ${topics.length} 条，实体 ${entities.length} 条`);
+    });
+
+    const createTopic = async () => safeRun(async () => {
+      if (!state.topic.topic_name.trim()) {
+        setStatus('请输入主题名');
+        return;
       }
-    }
-    onMounted(()=>{
-      window.addEventListener('message', onMsg)
-    })
-    return { frameRef, src, store: storeRef }
+      await api.buildTopic({
+        topic_name: state.topic.topic_name,
+        topic_type: state.topic.topic_type,
+        description: state.topic.description,
+        item_ids: [],
+      });
+      state.topic.topic_name = '';
+      state.topic.description = '';
+      await loadTopic();
+      setStatus('主题创建成功');
+    });
+
+    const analyzeTopic = async (item) => safeRun(async () => {
+      await api.analyzeTopic(item.id, state.topic.focus);
+      await loadTopic();
+      setStatus(`主题 #${item.id} 分析完成`);
+    });
+
+    const backup = async () => safeRun(async () => {
+      const { data } = await api.runBackup('data/backup');
+      setStatus(`备份完成：${data.backup}`);
+    });
+
+    const switchView = async (view) => {
+      state.view = view;
+      if (view === 'x') await loadX();
+      if (view === 'youtube') await loadYoutube();
+      if (view === 'crypto') await loadCrypto();
+      if (view === 'charts') await loadCharts();
+      if (view === 'topic') await loadTopic();
+    };
+
+    onMounted(async () => {
+      await loadX();
+      await loadYoutube();
+      await loadCrypto();
+      await loadCharts();
+      await loadTopic();
+    });
+
+    return {
+      state,
+      xFiltered,
+      xActive,
+      switchView,
+      xCompare,
+      xDelete,
+      xPushTg,
+      xExport,
+      importYoutube,
+      analyzeYoutube,
+      pullCrypto,
+      backfillCrypto,
+      captureChart,
+      analyzeChart,
+      createTopic,
+      analyzeTopic,
+      backup,
+    };
   },
   template: `
-    <div class="panel p-2 h-full flex flex-col">
-      <div class="flex items-center justify-between mb-2">
-        <div class="text-sm text-gray-600">会话: {{ store.sessionId }}</div>
-        <div class="flex gap-2">
-          <input class="border rounded px-2 py-1 w-96" v-model="src" />
-          <button class="px-3 py-1 bg-blue-600 text-white rounded" @click="()=>{ }">跳转</button>
-        </div>
-      </div>
-      <iframe :src="src" ref="frameRef" class="flex-1 w-full" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" ></iframe>
-    </div>
-  `
-})
+    <div class="app-shell">
+      <aside class="side">
+        <div class="logo">Knowledge Base</div>
+        <button class="nav" :class="{active:state.view==='x'}" @click="switchView('x')">X Library</button>
+        <button class="nav" :class="{active:state.view==='youtube'}" @click="switchView('youtube')">YouTube Library</button>
+        <button class="nav" :class="{active:state.view==='crypto'}" @click="switchView('crypto')">Crypto Metrics</button>
+        <button class="nav" :class="{active:state.view==='charts'}" @click="switchView('charts')">Chart Snapshots</button>
+        <button class="nav" :class="{active:state.view==='topic'}" @click="switchView('topic')">Topic Intelligence</button>
+        <div class="side-bottom"><button class="action full" @click="backup">Backup</button></div>
+      </aside>
 
-const CapturePanel = defineComponent({
-  name: 'CapturePanel',
-  setup(){
-    return { store }
-  },
-  template: `
-    <div class="panel p-3">
-      <div class="font-semibold mb-2">采集数据</div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <div class="text-sm mb-2">帖子（{{ store.posts.length }}）</div>
-          <div class="list space-y-2">
-            <div v-for="p in store.posts" :key="p.url" class="p-2 border rounded">
-              <div class="text-sm font-medium">{{ p.kol_handle }}</div>
-              <div class="text-sm mono break-words">{{ p.url }}</div>
-              <div class="text-sm text-gray-700">{{ p.text.slice(0,140) }}</div>
-              <div class="text-xs text-gray-500">👍 {{ p.likes }} 🔁 {{ p.retweets }} 💬 {{ p.replies }}</div>
+      <main class="main">
+        <header class="header">
+          <h1 v-if="state.view==='x'">X Library</h1>
+          <h1 v-else-if="state.view==='youtube'">YouTube Library</h1>
+          <h1 v-else-if="state.view==='crypto'">Crypto Metrics</h1>
+          <h1 v-else-if="state.view==='charts'">Analysis & Snapshots</h1>
+          <h1 v-else>Topic Intelligence</h1>
+          <span class="status" :class="{loading: state.loading}">{{ state.loading ? 'Loading...' : state.status }}</span>
+        </header>
+
+        <section v-if="state.view==='x'" class="pane x-layout">
+          <div class="toolbar">
+            <input v-model="state.x.keyword" placeholder="Search by keywords, users, tags..." />
+            <button class="action" @click="xExport">Export</button>
+          </div>
+          <div class="x-grid">
+            <div class="card list">
+              <div v-for="(post,idx) in xFiltered" :key="post.url || idx" class="item" :class="{active: idx===state.x.activeIndex}" @click="state.x.activeIndex=idx">
+                <div class="title">{{ post.kol_name || post.kol_handle }}</div>
+                <div class="muted">@{{ post.kol_handle }}</div>
+                <div class="text">{{ post.text }}</div>
+              </div>
+            </div>
+            <div class="card detail" v-if="xActive">
+              <h2>{{ xActive.kol_name || xActive.kol_handle }}</h2>
+              <div class="muted">{{ xActive.url }}</div>
+              <div class="columns">
+                <div>
+                  <h4>Original</h4>
+                  <p>{{ xActive.text }}</p>
+                </div>
+                <div>
+                  <h4>Translated</h4>
+                  <p>{{ xActive.translated_text || '暂无译文' }}</p>
+                </div>
+              </div>
+              <div class="actions-row">
+                <button class="action danger" @click="xDelete">Delete</button>
+                <button class="action primary" @click="xPushTg">Push TG</button>
+              </div>
+            </div>
+            <div class="card detail" v-else>请选择一条记录</div>
+          </div>
+          <div class="card compare">
+            <textarea v-model="state.x.compareInput" placeholder="每行一个X链接"></textarea>
+            <button class="action" @click="xCompare">Compare URLs</button>
+          </div>
+        </section>
+
+        <section v-else-if="state.view==='youtube'" class="pane">
+          <div class="toolbar">
+            <input v-model="state.youtube.urlInput" placeholder="一行一个 YouTube URL" />
+            <input v-model="state.youtube.channelName" placeholder="Channel Name" style="max-width:220px" />
+            <button class="action primary" @click="importYoutube">Process</button>
+          </div>
+          <div class="metrics">
+            <div class="metric"><strong>{{ state.youtube.items.length }}</strong><span>Total Videos</span></div>
+            <div class="metric"><strong>{{ state.youtube.items.filter(i=>i.analysis_status!=='done').length }}</strong><span>Subtitle Scraping</span></div>
+            <div class="metric"><strong>{{ state.youtube.items.filter(i=>i.analysis_status==='done').length }}</strong><span>Ready For Analysis</span></div>
+          </div>
+          <div class="card list">
+            <div v-for="item in state.youtube.items" :key="item.id" class="item">
+              <div class="title">{{ item.title }}</div>
+              <div class="muted">{{ item.url }}</div>
+              <div class="two-col">
+                <div><h4>Cleaned Subtitles</h4><p>{{ item.content_cleaned || '待处理' }}</p></div>
+                <div><h4>AI Analysis</h4><p>{{ item.analysis_result || '待分析' }}</p></div>
+              </div>
+              <button class="action" @click="analyzeYoutube(item)">Analyze</button>
             </div>
           </div>
-        </div>
-        <div>
-          <div class="text-sm mb-2">浏览记录（{{ store.logs.length }}）</div>
-          <div class="list space-y-2">
-            <div v-for="l in store.logs" :key="l.visited_at + l.url" class="p-2 border rounded">
-              <div class="text-sm mono">{{ l.visited_at }}</div>
-              <div class="text-sm break-words">{{ l.url }}</div>
+        </section>
+
+        <section v-else-if="state.view==='crypto'" class="pane">
+          <div class="toolbar">
+            <input v-model="state.crypto.symbol" placeholder="Symbol" style="max-width:150px" />
+            <input v-model="state.crypto.metric_name" placeholder="Metric" style="max-width:180px" />
+            <input v-model="state.crypto.interval" placeholder="Interval" style="max-width:120px" />
+            <input v-model="state.crypto.value" placeholder="Value" style="max-width:140px" />
+            <button class="action primary" @click="pullCrypto">Fetch Metrics</button>
+            <button class="action" @click="backfillCrypto">Backfill</button>
+          </div>
+          <div class="card cards-grid">
+            <div class="snapshot" v-for="item in state.crypto.items" :key="item.id">
+              <div class="title">{{ item.title }}</div>
+              <div class="muted">{{ item.extra.metric_name }} · {{ item.extra.interval }}</div>
+              <div class="value">{{ item.extra.value }}</div>
             </div>
           </div>
-        </div>
-      </div>
-    </div>
-  `
-})
+        </section>
 
-import { api } from './services/api.js'
-
-const App = defineComponent({
-  name: 'App',
-  components: { EmbeddedBrowser, CapturePanel },
-  setup(){
-    const storeRef = store;
-    const syncing = ref(false);
-    const sync = async ()=>{
-      if(syncing.value) return;
-      syncing.value = true;
-      const posts = storeRef.posts.splice(0, storeRef.posts.length);
-      const logs = storeRef.logs.splice(0, storeRef.logs.length);
-      if(posts.length) await api.syncPosts(posts);
-      if(logs.length) await api.syncBrowse(logs);
-      syncing.value = false;
-    }
-    onMounted(()=>{
-      setInterval(sync, 5000)
-    })
-    return { store: storeRef, syncing, sync }
-  },
-  template: `
-    <div class="h-full flex flex-col">
-      <header class="p-3 bg-white border-b">
-        <div class="max-w-7xl mx-auto flex items-center justify-between">
-          <div class="text-lg font-semibold">X 嵌入浏览与采集（Vue 3 + Python）</div>
-          <div class="flex items-center gap-2">
-            <button class="px-3 py-1 bg-green-600 text-white rounded" @click="sync">立即同步</button>
-            <span class="text-sm" v-if="syncing">同步中…</span>
+        <section v-else-if="state.view==='charts'" class="pane">
+          <div class="toolbar">
+            <input v-model="state.charts.page_url" placeholder="Page URL" />
+            <input v-model="state.charts.platform" placeholder="Platform" style="max-width:140px" />
+            <input v-model="state.charts.symbol" placeholder="Symbol" style="max-width:140px" />
+            <input v-model="state.charts.timeframe" placeholder="Timeframe" style="max-width:120px" />
+            <button class="action primary" @click="captureChart">Capture</button>
           </div>
-        </div>
-      </header>
-      <main class="max-w-7xl mx-auto p-3 grid grid-cols-3 gap-3 flex-1 w-full">
-        <div class="col-span-2 h-[78vh]"><EmbeddedBrowser/></div>
-        <div class="h-[78vh]"><CapturePanel/></div>
+          <div class="card cards-grid">
+            <div class="snapshot" v-for="item in state.charts.items" :key="item.id">
+              <div class="title">{{ item.title }}</div>
+              <div class="muted">{{ item.url }}</div>
+              <div class="muted">{{ item.media_paths[0] }}</div>
+              <div class="actions-row"><button class="action" @click="analyzeChart(item)">Analyze</button><span>{{ item.analysis_status }}</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section v-else class="pane">
+          <div class="toolbar">
+            <input v-model="state.topic.topic_name" placeholder="Topic name" style="max-width:220px" />
+            <input v-model="state.topic.description" placeholder="Description" />
+            <input v-model="state.topic.focus" placeholder="Analyze focus" style="max-width:220px" />
+            <button class="action primary" @click="createTopic">Create Topic</button>
+          </div>
+          <div class="two-panels">
+            <div class="card list">
+              <h3>Topics</h3>
+              <div v-for="t in state.topic.topics" :key="t.id" class="item">
+                <div class="title">#{{ t.id }} {{ t.topic_name }}</div>
+                <div class="muted">{{ t.topic_type }} · {{ t.description }}</div>
+                <button class="action" @click="analyzeTopic(t)">Analyze</button>
+              </div>
+            </div>
+            <div class="card list">
+              <h3>Key Entities</h3>
+              <div v-for="e in state.topic.entities" :key="e.id" class="item">
+                <div class="title">{{ e.entity_name }}</div>
+                <div class="muted">reliability {{ e.reliability_score }} · forecast {{ e.forecast_score }}</div>
+                <div class="text">{{ e.profile_summary || '暂无画像摘要' }}</div>
+              </div>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
-  `
-})
-
-createApp(App).mount('#app')
+  `,
+}).mount('#app');
