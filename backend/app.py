@@ -17,6 +17,7 @@ from pydantic import ValidationError
 BASE_DIR = os.path.dirname(__file__)
 
 from models import SessionLocal, KolPost, BrowseLog, KnowledgeItem, Topic, EntityProfile, init_db
+from services.youtube import YoutubePipeline
 from schemas import (
     KolPostList,
     BrowseLogList,
@@ -456,6 +457,18 @@ def youtube_import():
     if err:
         return err
 
+    urls = list(payload.urls)
+    if not urls and payload.channel_name and payload.start_time:
+        pipeline = YoutubePipeline()
+        # 支持传 channel_id 到 channel_name 字段进行后向兼容
+        urls = pipeline.collect_video_urls([payload.channel_name], payload.start_time.isoformat())
+
+    created = 0
+    with db_session() as db:
+        for url in urls:
+            exists = db.query(KnowledgeItem).filter(KnowledgeItem.source_type == "youtube", KnowledgeItem.url == url).first()
+            if exists:
+                continue
     created = 0
     with db_session() as db:
         for url in payload.urls:
@@ -476,6 +489,7 @@ def youtube_import():
                 )
             )
             created += 1
+    return ok({"created": created, "requested": len(urls)})
     return ok({"created": created})
 
 

@@ -18,6 +18,13 @@ required=(
   scripts/bootstrap.sh
   scripts/run_backend.sh
   scripts/run_frontend.sh
+  scripts/youtube_pipeline.py
+  backend/services/youtube/__init__.py
+  backend/services/youtube/config.py
+  backend/services/youtube/fetcher.py
+  backend/services/youtube/downloader.py
+  backend/services/youtube/transcriber.py
+  backend/services/youtube/pipeline.py
 )
 
 missing=0

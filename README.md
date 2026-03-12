@@ -47,3 +47,19 @@ bash scripts/run_frontend.sh
 
 - 环境变量：`COLLECT_AUTH_TOKEN`（默认 `1`）
 - 请求体：`{ auth, data[] }`，其中 `data` 支持 `id/full_text/user_handle/url/media_urls/extra`。
+
+
+## YouTube 独立流水线（已拆分模块）
+
+- 模块目录：`backend/services/youtube/`
+  - `fetcher.py`（频道视频抓取）
+  - `downloader.py`（yt-dlp 下载）
+  - `transcriber.py`（faster-whisper 转写）
+  - `pipeline.py`（主调度）
+- 独立运行：
+
+```bash
+python scripts/youtube_pipeline.py --start-date 2026-02-27T00:00:00Z --channel-id UCxxxx
+```
+
+说明：下载与转写依赖是可选加载，未安装时会跳过对应步骤并返回状态。
