@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 import requests
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
+from flask import Blueprint, Flask, Response, jsonify, request
 from flask_cors import CORS
 from pydantic import ValidationError
 
@@ -468,6 +469,9 @@ def youtube_import():
             exists = db.query(KnowledgeItem).filter(KnowledgeItem.source_type == "youtube", KnowledgeItem.url == url).first()
             if exists:
                 continue
+    created = 0
+    with db_session() as db:
+        for url in payload.urls:
             db.add(
                 KnowledgeItem(
                     source_type="youtube",
@@ -486,6 +490,7 @@ def youtube_import():
             )
             created += 1
     return ok({"created": created, "requested": len(urls)})
+    return ok({"created": created})
 
 
 @api.get("/youtube/items")
