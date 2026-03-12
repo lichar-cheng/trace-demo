@@ -291,6 +291,34 @@ createApp({
                 <div class="text">{{ post.text }}</div>
               </div>
             </div>
+
+            <div class="card detail" v-if="xActive">
+              <h2>{{ xActive.kol_name || xActive.kol_handle }}</h2>
+              <div class="muted">{{ xActive.url }}</div>
+              <div class="columns">
+                <div>
+                  <h4>Original</h4>
+                  <p>{{ xActive.text }}</p>
+                </div>
+                <div>
+                  <h4>Translated</h4>
+                  <p>{{ xActive.translated_text || '暂无译文' }}</p>
+                </div>
+              </div>
+              <div v-if="xActive.image_urls && xActive.image_urls.length" class="image-grid">
+                <img
+                    v-for="(img, idx) in xActive.image_urls"
+                    :key="img || idx"
+                    :src="img.startsWith('http') ? img : 'http://localhost:8000' + img"
+                    class="detail-image"
+                />
+              </div>
+              <div class="actions-row">
+                <button class="action danger" @click="xDelete">Delete</button>
+                <button class="action primary" @click="xPushTg">Push TG</button>
+              </div>
+            </div>
+
             <div class="card detail" v-if="xActive">
               <h2>{{ xActive.kol_name || xActive.kol_handle }}</h2>
               <div class="muted">{{ xActive.url }}</div>
@@ -309,6 +337,9 @@ createApp({
                 <button class="action primary" @click="xPushTg">Push TG</button>
               </div>
             </div>
+
+
+
             <div class="card detail" v-else>请选择一条记录</div>
           </div>
           <div class="card compare">

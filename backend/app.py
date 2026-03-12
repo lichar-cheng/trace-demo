@@ -1,4 +1,3 @@
-# Last Edited: 2026-03-12
 import hashlib
 import json
 import os
@@ -10,11 +9,8 @@ from pathlib import Path
 import httpx
 import requests
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
-from flask import Blueprint, Flask, Response, jsonify, request
 from flask_cors import CORS
 from pydantic import ValidationError
-
-BASE_DIR = os.path.dirname(__file__)
 
 from models import SessionLocal, KolPost, BrowseLog, KnowledgeItem, Topic, EntityProfile, init_db
 from services.youtube import YoutubePipeline
@@ -36,6 +32,8 @@ from schemas import (
     BackupPayload,
 )
 
+BASE_DIR = os.path.dirname(__file__)
+
 init_db()
 
 AUTH_TOKEN = os.getenv("COLLECT_AUTH_TOKEN", "1")
@@ -43,19 +41,21 @@ DATA_ROOT_DIR = os.getenv("DATA_ROOT_DIR", str(Path(BASE_DIR).parent / "data" / 
 UPLOAD_DIR = os.path.join(DATA_ROOT_DIR, "uploads")
 IMAGES_DIR = os.path.join(DATA_ROOT_DIR, "images")
 TRASH_DIR = os.path.join(DATA_ROOT_DIR, "trash")
+COLLECT_FILE_PATTERN = "x_collect_*.json"
 for _d in [DATA_ROOT_DIR, UPLOAD_DIR, IMAGES_DIR, TRASH_DIR]:
     os.makedirs(_d, exist_ok=True)
 
 ASSETS_MAP = {
-    "比特币": ["btc", "bitcoin", "大饼", "比特", "sats"],
-    "以太坊": ["eth", "ethereum", "以太", "二饼", "vitalik"],
-    "山寨币": ["sol", "bnb", "doge", "meme", "pepe", "altcoin", "山寨", "土狗"],
+    "bitcoin": ["btc", "bitcoin", "sats"],
+    "ethereum": ["eth", "ethereum", "vitalik"],
+    "altcoin": ["sol", "bnb", "doge", "meme", "pepe", "altcoin"],
 }
 THEMES_MAP = {
-    "宏观": ["macro", "fed", "cpi", "ppi", "rate", "inflation", "美联储", "加息", "降息", "通胀"],
-    "技术": ["technical", "rsi", "macd", "ma", "ema", "support", "技术面", "k线", "支撑", "阻力"],
-    "周期": ["cycle", "bull", "bear", "halving", "周期", "牛市", "熊市", "减半"],
+    "macro": ["macro", "fed", "cpi", "ppi", "rate", "inflation"],
+    "technical": ["technical", "rsi", "macd", "ma", "ema", "support", "resistance"],
+    "cycle": ["cycle", "bull", "bear", "halving"],
 }
+
 
 def generate_tags(text: str) -> str:
     if not text:
@@ -68,6 +68,7 @@ def generate_tags(text: str) -> str:
                 tags.add(tag)
     return " ".join(sorted(tags))
 
+
 def read_json_file(filepath):
     if not os.path.exists(filepath):
         return []
@@ -78,9 +79,30 @@ def read_json_file(filepath):
     except Exception:
         return []
 
+
 def get_today_filename():
     today_str = datetime.now().strftime("%Y-%m-%d")
     return os.path.join(DATA_ROOT_DIR, f"x_collect_{today_str}.json")
+
+
+def split_csv(value):
+    if not value:
+        return []
+    return [part for part in value.split(",") if part]
+
+
+def normalize_local_media_paths(paths):
+    normalized = []
+    for path in paths or []:
+        if path:
+            normalized.append(path.replace("\\", "/"))
+    return normalized
+
+
+def build_image_urls(local_paths, remote_urls):
+    local_urls = [f"/images/{path}" for path in normalize_local_media_paths(local_paths)]
+    return local_urls or list(remote_urls or [])
+
 
 def save_images_for_item(item_dict):
     media_urls = item_dict.get("media_urls", []) or []
@@ -104,13 +126,41 @@ def save_images_for_item(item_dict):
                 if resp.status_code == 200:
                     with open(file_path, "wb") as f:
                         f.write(resp.content)
-            rel_path = os.path.relpath(file_path, DATA_ROOT_DIR).replace("\\", "/")
-            local_paths.append(rel_path)
+            if os.path.exists(file_path):
+                rel_path = os.path.relpath(file_path, DATA_ROOT_DIR).replace("\\", "/")
+                local_paths.append(rel_path)
         except Exception:
             continue
 
-    item_dict["local_media_paths"] = local_paths
+    item_dict["local_media_paths"] = normalize_local_media_paths(local_paths)
     return item_dict
+
+
+def remove_local_media_files(local_paths):
+    deleted = []
+    for rel_path in normalize_local_media_paths(local_paths):
+        abs_path = os.path.normpath(os.path.join(DATA_ROOT_DIR, rel_path))
+        try:
+            if os.path.isfile(abs_path):
+                os.remove(abs_path)
+                deleted.append(rel_path)
+        except Exception:
+            continue
+    return deleted
+
+
+def remove_items_from_collect_files(urls):
+    removed = 0
+    for file_path in Path(DATA_ROOT_DIR).glob(COLLECT_FILE_PATTERN):
+        items = read_json_file(str(file_path))
+        if not items:
+            continue
+        kept = [item for item in items if (item.get("url") or "") not in urls]
+        if len(kept) != len(items):
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(kept, f, ensure_ascii=False, indent=2)
+            removed += len(items) - len(kept)
+    return removed
 
 
 @contextmanager
@@ -148,6 +198,8 @@ def parse_extra(value):
 
 
 def serialize_knowledge(item):
+    local_media_paths = split_csv(item.local_media_paths)
+    remote_media_paths = split_csv(item.media_paths)
     return {
         "id": item.id,
         "source_type": item.source_type,
@@ -158,7 +210,9 @@ def serialize_knowledge(item):
         "author_name": item.author_name,
         "publish_time": item.publish_time.isoformat() if item.publish_time else None,
         "url": item.url,
-        "media_paths": (item.media_paths or "").split(",") if item.media_paths else [],
+        "media_paths": local_media_paths or remote_media_paths,
+        "local_media_paths": local_media_paths,
+        "remote_media_paths": remote_media_paths,
         "tags_primary": item.tags_primary,
         "analysis_status": item.analysis_status,
         "analysis_result": item.analysis_result,
@@ -189,6 +243,7 @@ def create_posts():
                 posted_at=item.posted_at,
                 text=item.text,
                 image_urls=",".join(item.image_urls),
+                local_image_paths="",
                 likes=item.likes or 0,
                 retweets=item.retweets or 0,
                 replies=item.replies or 0,
@@ -206,6 +261,7 @@ def create_posts():
                     publish_time=item.posted_at,
                     url=item.url,
                     media_paths=",".join(item.image_urls),
+                    local_media_paths="",
                     tags_primary="x",
                     analysis_status="pending",
                     source_file="auto:posts_bulk",
@@ -237,7 +293,9 @@ def list_posts():
             "posted_at": i.posted_at.isoformat() if i.posted_at else None,
             "text": i.text,
             "translated_text": None,
-            "image_urls": i.image_urls.split(",") if i.image_urls else [],
+            "image_urls": build_image_urls(split_csv(i.local_image_paths), split_csv(i.image_urls)),
+            "local_image_paths": split_csv(i.local_image_paths),
+            "remote_image_urls": split_csv(i.image_urls),
             "likes": i.likes,
             "retweets": i.retweets,
             "replies": i.replies,
@@ -312,13 +370,44 @@ def trash_batch():
         return err
 
     with db_session() as db:
-        deleted_posts = 0
+        post_query = db.query(KolPost)
         if payload.ids:
-            deleted_posts += db.query(KolPost).filter(KolPost.id.in_(payload.ids)).delete(synchronize_session=False)
+            post_query = post_query.filter(KolPost.id.in_(payload.ids))
         if payload.urls:
-            deleted_posts += db.query(KolPost).filter(KolPost.url.in_(payload.urls)).delete(synchronize_session=False)
-            db.query(KnowledgeItem).filter(KnowledgeItem.url.in_(payload.urls)).delete(synchronize_session=False)
-    return ok({"deleted": deleted_posts})
+            post_query = post_query.filter(KolPost.url.in_(payload.urls))
+        posts = post_query.all()
+
+        urls = {post.url for post in posts if post.url}
+        if payload.urls:
+            urls.update(payload.urls)
+
+        knowledge_items = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "x",
+            KnowledgeItem.url.in_(urls),
+        ).all() if urls else []
+
+        local_paths = []
+        for post in posts:
+            local_paths.extend(split_csv(post.local_image_paths))
+        for item in knowledge_items:
+            local_paths.extend(split_csv(item.local_media_paths))
+
+        deleted_posts = len(posts)
+        deleted_knowledge = len(knowledge_items)
+
+        for post in posts:
+            db.delete(post)
+        for item in knowledge_items:
+            db.delete(item)
+
+    deleted_files = remove_local_media_files(local_paths)
+    removed_collect_items = remove_items_from_collect_files(urls)
+    return ok({
+        "deleted": deleted_posts,
+        "deleted_knowledge": deleted_knowledge,
+        "deleted_images": len(deleted_files),
+        "deleted_collect_items": removed_collect_items,
+    })
 
 
 @api.post("/push/tg")
@@ -401,10 +490,10 @@ def analyze_topic(topic_id):
         topic = db.query(Topic).filter(Topic.id == topic_id).first()
         if not topic:
             return ok({"error": "topic_not_found"}, 404)
-        focus = payload.focus or topic.topic_name or "事件"
-        topic.short_term_view = f"短期：{focus}热度提升，观点分歧明显。"
-        topic.mid_term_view = f"中期：{focus}进入验证阶段，信息噪声下降。"
-        topic.long_term_view = f"长期：{focus}将回归基本面与执行结果。"
+        focus = payload.focus or topic.topic_name or "topic"
+        topic.short_term_view = f"Short term: attention around {focus} may keep rising."
+        topic.mid_term_view = f"Mid term: {focus} needs validation from market and follow-up data."
+        topic.long_term_view = f"Long term: {focus} will return to fundamentals and execution."
         topic.analysis_result = "\n".join([topic.short_term_view, topic.mid_term_view, topic.long_term_view])
     return ok({"topic_id": topic_id, "analysis_result": topic.analysis_result})
 
@@ -457,27 +546,26 @@ def youtube_import():
     if err:
         return err
 
-    urls = list(payload.urls)
+    urls = [url.strip() for url in payload.urls if url.strip()]
     if not urls and payload.channel_name and payload.start_time:
         pipeline = YoutubePipeline()
-        # 支持传 channel_id 到 channel_name 字段进行后向兼容
         urls = pipeline.collect_video_urls([payload.channel_name], payload.start_time.isoformat())
 
     created = 0
     with db_session() as db:
         for url in urls:
-            exists = db.query(KnowledgeItem).filter(KnowledgeItem.source_type == "youtube", KnowledgeItem.url == url).first()
+            exists = db.query(KnowledgeItem).filter(
+                KnowledgeItem.source_type == "youtube",
+                KnowledgeItem.url == url,
+            ).first()
             if exists:
                 continue
-    created = 0
-    with db_session() as db:
-        for url in payload.urls:
             db.add(
                 KnowledgeItem(
                     source_type="youtube",
                     source_subtype="subtitle",
                     title=f"YouTube: {url}",
-                    content_raw="字幕原文（待抓取）",
+                    content_raw="",
                     content_cleaned="",
                     author_name=payload.channel_name,
                     publish_time=payload.start_time,
@@ -490,7 +578,6 @@ def youtube_import():
             )
             created += 1
     return ok({"created": created, "requested": len(urls)})
-    return ok({"created": created})
 
 
 @api.get("/youtube/items")
@@ -508,12 +595,51 @@ def youtube_analyze():
         return err
 
     with db_session() as db:
-        items = db.query(KnowledgeItem).filter(KnowledgeItem.id.in_(payload.item_ids)).all()
+        selected = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "youtube",
+            KnowledgeItem.id.in_(payload.item_ids),
+        ).all()
+        selected_data = [{"id": item.id, "url": item.url} for item in selected if item.url]
+        for item in selected:
+            item.analysis_status = "processing"
+
+    pipeline = YoutubePipeline()
+    results = pipeline.process_urls([item["url"] for item in selected_data])
+    result_by_url = {row["url"]: row for row in results}
+
+    analyzed = 0
+    with db_session() as db:
+        items = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "youtube",
+            KnowledgeItem.id.in_([item["id"] for item in selected_data]),
+        ).all()
         for item in items:
-            item.analysis_status = "done"
-            item.content_cleaned = "去口语化整理完成"
-            item.analysis_result = "观点总结：该视频强调多模态模型将成为行业主线。"
-    return ok({"analyzed": len(items)})
+            row = result_by_url.get(item.url, {})
+            transcribe = row.get("transcribe") or {}
+            transcript = ""
+            txt_path = transcribe.get("txt_path")
+            if txt_path and os.path.exists(txt_path):
+                with open(txt_path, "r", encoding="utf-8") as f:
+                    transcript = f.read().strip()
+
+            if row.get("downloaded") and transcribe.get("ok"):
+                item.content_raw = transcript
+                item.content_cleaned = transcript
+                item.analysis_status = "done"
+                item.analysis_result = "Transcript downloaded and stored."
+            else:
+                item.analysis_status = "failed"
+                item.analysis_result = json.dumps(
+                    {
+                        "downloaded": row.get("downloaded", False),
+                        "transcribed": row.get("transcribed", False),
+                        "reason": transcribe.get("reason", "download_or_transcribe_failed"),
+                    },
+                    ensure_ascii=False,
+                )
+            analyzed += 1
+
+    return ok({"analyzed": analyzed, "results": results})
 
 
 @api.post("/crypto/pull")
@@ -626,7 +752,7 @@ def chart_analyze():
         if not item:
             return ok({"error": "item_not_found"}, 404)
         item.analysis_status = "done"
-        item.analysis_result = "图表分析：趋势偏强，短线可能回踩后继续上行。"
+        item.analysis_result = "Chart analysis finished."
     return ok({"item_id": payload.item_id, "analysis_status": "done"})
 
 
@@ -658,11 +784,11 @@ def inject_script(html: str) -> str:
     script = """
 <script>
 const send=(t,p)=>parent.postMessage({type:t,payload:p},'*');
-const norm=(s)=>{if(!s)return'';return s.replace(/\s+/g,' ').trim();};
+const norm=(s)=>{if(!s)return'';return s.replace(/\\s+/g,' ').trim();};
 const selTweets=()=>Array.from(document.querySelectorAll('a[href*="/status/"]')).map(a=>{
   const abs=a.href;
-  const m=abs.match(/https?:\/\/twitter\.com\/([^\/]+)\/status\/(\d+)/);
-  const handle=m?m[1]:'';
+  const m=abs.match(/https?:\\/\\/(twitter|x)\\.com\\/([^\\/]+)\\/status\\/(\\d+)/);
+  const handle=m?m[2]:'';
   let article=a.closest('article');
   let text='';
   if(article){text=norm(article.innerText);}
@@ -672,7 +798,7 @@ const selTweets=()=>Array.from(document.querySelectorAll('a[href*="/status/"]'))
   let likes=0,reposts=0,replies=0;
   Array.from(article?article.querySelectorAll('[aria-label]'):[]).forEach(el=>{
     const l=el.getAttribute('aria-label')||'';
-    const n=parseInt((l.match(/\d+/)||['0'])[0]);
+    const n=parseInt((l.match(/\\d+/)||['0'])[0], 10);
     if(/Like/i.test(l))likes=n;
     if(/Reply/i.test(l))replies=n;
     if(/Repost|Retweet/i.test(l))reposts=n;
@@ -708,7 +834,6 @@ def collect_data():
 
     created = 0
     new_items = []
-    posts_payload = []
 
     for item in payload.data:
         if item.id in existing_ids:
@@ -723,67 +848,66 @@ def collect_data():
         existing_ids.add(item.id)
         created += 1
 
-        posts_payload.append(
-            {
-                "kol_handle": item.user_handle or "unknown",
-                "kol_name": item.name or item.user_handle or "unknown",
-                "kol_avatar_url": "",
-                "posted_at": item.created_at,
-                "text": text,
-                "image_urls": item_dict.get("local_media_paths", []),
-                "likes": int(item.extra.get("likes", 0) or 0),
-                "retweets": int(item.extra.get("retweets", 0) or 0),
-                "replies": int(item.extra.get("replies", 0) or 0),
-                "url": item.url or f"https://x.com/{item.user_handle}/status/{item.id}",
-            }
-        )
-
     if new_items:
         current_data.extend(new_items)
         with open(target_file, "w", encoding="utf-8") as f:
             json.dump(current_data, f, ensure_ascii=False, indent=2)
 
-    if posts_payload:
+    if new_items:
         with db_session() as db:
-            for p in posts_payload:
-                exists = db.query(KolPost).filter(KolPost.url == p["url"]).first()
+            for item_dict in new_items:
+                post_url = item_dict.get("url") or f"https://x.com/{item_dict.get('user_handle')}/status/{item_dict.get('id')}"
+                exists = db.query(KolPost).filter(KolPost.url == post_url).first()
                 if exists:
                     continue
+
                 posted_at = None
-                if p.get("posted_at"):
+                if item_dict.get("created_at"):
                     try:
-                        posted_at = datetime.fromisoformat(p["posted_at"].replace("Z", "+00:00"))
+                        posted_at = datetime.fromisoformat(item_dict["created_at"].replace("Z", "+00:00"))
                     except Exception:
                         posted_at = None
+
+                remote_urls = item_dict.get("media_urls", []) or []
+                local_paths = item_dict.get("local_media_paths", []) or []
+                text = item_dict.get("full_text") or ""
+                likes = int((item_dict.get("extra") or {}).get("likes", 0) or 0)
+                retweets = int((item_dict.get("extra") or {}).get("retweets", 0) or 0)
+                replies = int((item_dict.get("extra") or {}).get("replies", 0) or 0)
+                handle = item_dict.get("user_handle") or "unknown"
+                name = item_dict.get("name") or handle
+
                 post = KolPost(
-                    kol_handle=p["kol_handle"],
-                    kol_name=p["kol_name"],
-                    kol_avatar_url=p["kol_avatar_url"],
+                    kol_handle=handle,
+                    kol_name=name,
+                    kol_avatar_url="",
                     posted_at=posted_at,
-                    text=p["text"],
-                    image_urls=",".join(p["image_urls"]),
-                    likes=p["likes"],
-                    retweets=p["retweets"],
-                    replies=p["replies"],
-                    url=p["url"],
+                    text=text,
+                    image_urls=",".join(remote_urls),
+                    local_image_paths=",".join(local_paths),
+                    likes=likes,
+                    retweets=retweets,
+                    replies=replies,
+                    url=post_url,
                 )
                 db.add(post)
                 db.add(
                     KnowledgeItem(
                         source_type="x",
                         source_subtype="tweet",
-                        title=f"@{p['kol_handle']}",
-                        content_raw=p["text"],
-                        content_cleaned=p["text"],
-                        author_name=p["kol_name"],
+                        title=f"@{handle}",
+                        content_raw=text,
+                        content_cleaned=text,
+                        author_name=name,
                         publish_time=posted_at,
-                        url=p["url"],
-                        media_paths=",".join(p["image_urls"]),
+                        url=post_url,
+                        media_paths=",".join(remote_urls),
+                        local_media_paths=",".join(local_paths),
                         tags_primary="x",
                         analysis_status="pending",
                         push_status="pending",
                         source_file="collect",
-                        extra_json=json.dumps({"likes": p["likes"], "retweets": p["retweets"], "replies": p["replies"]}, ensure_ascii=False),
+                        extra_json=json.dumps({"likes": likes, "retweets": retweets, "replies": replies}, ensure_ascii=False),
                     )
                 )
 

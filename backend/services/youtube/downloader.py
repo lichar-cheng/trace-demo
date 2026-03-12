@@ -20,8 +20,11 @@ class YoutubeDownloader:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         ytdl_opts = {
+
             "format": "bestaudio/best",
-            "outtmpl": f"{output_dir}/%(channel)s_%(upload_date)s_%(title)s_%(id)s.%(ext)s",
+            'extract_audio': True,
+            'audio_format': 'm4a',
+            "outtmpl": f"{output_dir}/%(channel)s_%(upload_date)s_%(id)s.%(ext)s",
             "sleep_interval_requests": 1.5,
             "ignoreerrors": True,
             "quiet": True,

@@ -1,5 +1,4 @@
-# Last Edited: 2026-03-12
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, create_engine
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.sql import func
 import os
@@ -9,7 +8,7 @@ DB_PATH = os.path.join(BASE_DIR, "data.db")
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, expire_on_commit=False, bind=engine)
 Base = declarative_base()
 
 
@@ -22,6 +21,7 @@ class KolPost(Base):
     posted_at = Column(DateTime, nullable=True)
     text = Column(Text)
     image_urls = Column(Text)
+    local_image_paths = Column(Text, nullable=True)
     likes = Column(Integer, default=0)
     retweets = Column(Integer, default=0)
     replies = Column(Integer, default=0)
@@ -54,6 +54,7 @@ class KnowledgeItem(Base):
     collected_time = Column(DateTime, server_default=func.now())
     url = Column(Text, nullable=True)
     media_paths = Column(Text, nullable=True)
+    local_media_paths = Column(Text, nullable=True)
     tags_primary = Column(String(255), nullable=True)
     tags_secondary = Column(Text, nullable=True)
     topic_ids = Column(Text, nullable=True)
@@ -94,3 +95,23 @@ class EntityProfile(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
+
+
+def _ensure_columns():
+    required_columns = {
+        "kol_posts": {
+            "local_image_paths": "TEXT",
+        },
+        "knowledge_items": {
+            "local_media_paths": "TEXT",
+        },
+    }
+
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table_name, columns in required_columns.items():
+            existing = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in columns.items():
+                if column_name not in existing:
+                    conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
