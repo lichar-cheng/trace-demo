@@ -1,0 +1,24 @@
+[
+  {
+    "id": "tweet_19",
+    "name": "Test User",
+    "user_handle": "testuser",
+    "tags": "bitcoin technical",
+    "primary_tag": "test",
+    "full_text": "BTC may break higher this week.",
+    "translated_text": "BTC 本周可能继续上涨。",
+    "url": "https://x.com/testuser/status/tweet_001",
+    "created_at": "2026-03-12T10:00:00Z",
+    "captured_at": "2026-03-12T10:05:00Z",
+    "media_urls": [
+      "https://pbs.twimg.com/media/sample1.jpg"
+    ],
+    "extra": {
+      "likes": 12,
+      "retweets": 3,
+      "replies": 1
+    },
+    "local_media_paths": [],
+    "server_received_at": "2026-03-12T09:01:34.714950"
+  }
+]

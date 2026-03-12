@@ -1,7 +1,13 @@
 // Last Edited: 2026-03-12
 const apiBase = 'http://localhost:8000';
 
+axios.defaults.withCredentials = true;
+
 export const api = {
+  authLogin(payload){ return axios.post(`${apiBase}/api/auth/login`, payload); },
+  authStatus(){ return axios.get(`${apiBase}/api/auth/status`); },
+  authLogout(){ return axios.post(`${apiBase}/api/auth/logout`); },
+
   syncPosts(items){ return axios.post(`${apiBase}/api/posts/bulk`, { items }); },
   syncBrowse(items){ return axios.post(`${apiBase}/api/browse-log`, { items }); },
   listPosts(params){ return axios.get(`${apiBase}/api/posts`, { params }); },
@@ -10,6 +16,9 @@ export const api = {
   collectX(payload){ return axios.post(`${apiBase}/api/collect`, payload); },
   trashBatch(payload){ return axios.post(`${apiBase}/api/trash/batch`, payload); },
   pushTg(url){ return axios.post(`${apiBase}/api/push/tg`, { url }); },
+  listXSourceFiles(){ return axios.get(`${apiBase}/api/x/source/files`); },
+  uploadXJsonFiles(formData){ return axios.post(`${apiBase}/api/x/source/json-upload`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }); },
+  uploadXImageFolder(formData){ return axios.post(`${apiBase}/api/x/source/image-folder-upload`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }); },
 
   buildTopic(payload){ return axios.post(`${apiBase}/api/topics/build`, payload); },
   listTopics(){ return axios.get(`${apiBase}/api/topics`); },

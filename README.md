@@ -63,3 +63,8 @@ python scripts/youtube_pipeline.py --start-date 2026-02-27T00:00:00Z --channel-i
 ```
 
 说明：下载与转写依赖是可选加载，未安装时会跳过对应步骤并返回状态。
+## Environment
+
+Create a local `.env` from `.env.example` and keep the real file out of git.
+
+See [docs/ENVIRONMENT.md](/C:/Users/Dell/Documents/my_test/trace-demo/docs/ENVIRONMENT.md) for the current variable list.

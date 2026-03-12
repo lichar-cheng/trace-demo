@@ -1,0 +1,10 @@
+.env
+.env.local
+.env.*
+!.env.example
+
+data/x/images/
+data/x/uploads/
+data/youtube/audio_lake/
+data/youtube/transcribe_output/
+backend/data.db

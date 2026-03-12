@@ -1,0 +1,702 @@
+// ==UserScript==
+// @name         X Collector Full
+// @namespace    trace-demo
+// @version      1.0.0
+// @description  Collect X timeline data and sync to /collect
+// @match        https://x.com/*
+// @match        https://twitter.com/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_addStyle
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      localhost
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const CONFIG = {
+        serverUrl: GM_getValue('server_url_v600', 'http://localhost:8000/api/collect'),
+        authToken: GM_getValue('collect_token_v600', ''),
+        scanInterval: GM_getValue('scan_interval_v600', 60 * 1000),
+        scrollDelay: 2600,
+        maxScrolls: 12,
+        poolLimit: 500,
+        keywords: GM_getValue('keywords_v600', ''),
+        blacklist: GM_getValue('blacklist_v600', '')
+    };
+
+    const STATE = {
+        mode: 'AUTO',
+        isScanning: false,
+        timerId: null,
+        scrollDepth: 0,
+        hourFloor: 0,
+        dataPool: [],
+    };
+
+    try {
+        STATE.dataPool = JSON.parse(localStorage.getItem('x_pool_v600') || '[]');
+    } catch (e) {
+        STATE.dataPool = [];
+    }
+
+    let activeKeywords = CONFIG.keywords.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+    let activeBlacklist = CONFIG.blacklist.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+
+    const API_CACHE = new Map();
+
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const savePool = () => localStorage.setItem('x_pool_v600', JSON.stringify(STATE.dataPool));
+    const log = m => {
+        const el = document.getElementById('x-log-msg');
+        if (el) el.innerText = `[${new Date().toLocaleTimeString()}] ${m}`;
+        console.log('[x-collect]', m);
+    };
+
+    const updateHourFloor = () => {
+        const now = new Date();
+        now.setMinutes(0, 0, 0, 0);
+        STATE.hourFloor = now.getTime();
+    };
+    updateHourFloor();
+
+    function formatISOTime(dateInput) {
+        if (!dateInput) return null;
+        const d = new Date(dateInput);
+        if (isNaN(d.getTime())) return null;
+        return d.toISOString();
+    }
+
+    const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+
+    function setupNetworkHooks() {
+        function dispatch(data) {
+            window.postMessage({ type: 'X_CMD_GRAPHQL', payload: data }, '*');
+        }
+
+        const originalJson = win.Response.prototype.json;
+        win.Response.prototype.json = function () {
+            const url = this.url || '';
+            return originalJson.apply(this, arguments).then(data => {
+                if (url.includes('graphql')) {
+                    try { dispatch(data); } catch (e) {}
+                }
+                return data;
+            });
+        };
+
+        const originalText = win.Response.prototype.text;
+        win.Response.prototype.text = function () {
+            const url = this.url || '';
+            return originalText.apply(this, arguments).then(text => {
+                if (url.includes('graphql')) {
+                    try { dispatch(JSON.parse(text)); } catch (e) {}
+                }
+                return text;
+            });
+        };
+
+        const originalOpen = win.XMLHttpRequest.prototype.open;
+        const originalSend = win.XMLHttpRequest.prototype.send;
+        win.XMLHttpRequest.prototype.open = function (method, url) {
+            this._reqUrl = url;
+            return originalOpen.apply(this, arguments);
+        };
+        win.XMLHttpRequest.prototype.send = function (body) {
+            this.addEventListener('load', function () {
+                if (this._reqUrl && this._reqUrl.includes('graphql')) {
+                    try { dispatch(JSON.parse(this.responseText)); } catch (e) {}
+                }
+            });
+            return originalSend.apply(this, arguments);
+        };
+        console.log('X-CMD Network Hook Ready.');
+    }
+    setupNetworkHooks();
+
+    window.addEventListener('message', function (e) {
+        if (e.data?.type === 'X_CMD_GRAPHQL') {
+            const instructions = getTimelineInstructions(e.data.payload);
+            if (instructions && instructions.length > 0) processApiResponse(instructions);
+        }
+    });
+
+    function getTimelineInstructions(json) {
+        let instructions = [];
+        if (json.data?.home?.home_timeline_urt?.instructions) return json.data.home.home_timeline_urt.instructions;
+        if (json.data?.user?.result?.timeline_v2?.timeline?.instructions) return json.data.user.result.timeline_v2.timeline.instructions;
+        if (json.data?.search_by_raw_query?.search_timeline?.timeline?.instructions) return json.data.search_by_raw_query.search_timeline.timeline.instructions;
+        if (json.data?.list?.tweets_timeline?.timeline?.instructions) return json.data.list.tweets_timeline.timeline.instructions;
+        if (json.data?.threaded_conversation_with_injections_v2?.instructions) return json.data.threaded_conversation_with_injections_v2.instructions;
+
+        function search(node) {
+            if (instructions.length > 0) return;
+            if (!node || typeof node !== 'object') return;
+            if (Array.isArray(node)) {
+                for (const item of node) search(item);
+            } else {
+                if (node.instructions && Array.isArray(node.instructions)) {
+                    instructions = node.instructions;
+                    return;
+                }
+                for (const key in node) search(node[key]);
+            }
+        }
+        search(json.data || json);
+        return instructions;
+    }
+
+    function processApiResponse(instructions) {
+        const addEntriesInstruction = instructions.find(i => i.type === 'TimelineAddEntries');
+        if (addEntriesInstruction && addEntriesInstruction.entries) {
+            addEntriesInstruction.entries.forEach(entry => extractFromEntry(entry, () => {}));
+        }
+
+        const addToModuleInstruction = instructions.find(i => i.type === 'TimelineAddToModule');
+        if (addToModuleInstruction && addToModuleInstruction.moduleItems) {
+            addToModuleInstruction.moduleItems.forEach(item => {
+                if (item.item?.itemContent) extractFromItemContent(item.item.itemContent, () => {});
+            });
+        }
+    }
+
+    function extractFromEntry(entry, onCache) {
+        if (entry.entryId && entry.entryId.includes('promoted')) return;
+        if (entry.content?.entryType === 'TimelineTimelineItem' && entry.content.itemContent) {
+            extractFromItemContent(entry.content.itemContent, onCache);
+        } else if (entry.content?.entryType === 'TimelineTimelineModule' && entry.content.items) {
+            entry.content.items.forEach(item => {
+                if (item.item?.itemContent) extractFromItemContent(item.item.itemContent, onCache);
+            });
+        }
+    }
+
+    function extractFromItemContent(itemContent, onCache) {
+        const tweetResult = itemContent?.tweet_results?.result;
+        if (tweetResult) processSingleTweet(tweetResult, onCache);
+    }
+
+    function processSingleTweet(tweetResult, onCache) {
+        let tweet = tweetResult;
+        if (tweet.__typename === 'TweetWithVisibilityResults') tweet = tweet.tweet;
+        if (!tweet || tweet.__typename !== 'Tweet') return;
+
+        let targetTweet = tweet;
+        if (tweet.legacy?.retweeted_status_result?.result) {
+            let rtResult = tweet.legacy.retweeted_status_result.result;
+            if (rtResult.__typename === 'TweetWithVisibilityResults') rtResult = rtResult.tweet;
+            if (rtResult && rtResult.__typename === 'Tweet') targetTweet = rtResult;
+        }
+
+        if (!targetTweet.legacy) return;
+
+        let fullText = targetTweet.note_tweet?.note_tweet_results?.result?.text || targetTweet.legacy.full_text || "";
+        if (targetTweet.quoted_status_result?.result) {
+            let qt = targetTweet.quoted_status_result.result;
+            if (qt.__typename === 'TweetWithVisibilityResults') qt = qt.tweet;
+            if (qt && qt.legacy) {
+                fullText += " [引用:] " + (qt.note_tweet?.note_tweet_results?.result?.text || qt.legacy.full_text || "");
+            }
+        }
+        if (!fullText) return;
+
+        const id = targetTweet.legacy.id_str || targetTweet.rest_id;
+        const username = targetTweet.core?.user_results?.result?.core?.name
+            || targetTweet.core?.user_results?.result?.legacy?.name
+            || "Unknown";
+        const rawHandle = targetTweet.core?.user_results?.result?.core?.screen_name
+            || targetTweet.core?.user_results?.result?.legacy?.screen_name
+            || "unknown";
+        const handle = rawHandle.replace(/^@+/, "");
+
+        const mediaUrls = [];
+        const entitiesObj = targetTweet.legacy.extended_entities || targetTweet.legacy.entities;
+        if (entitiesObj && entitiesObj.media) {
+            entitiesObj.media.forEach(m => {
+                const mediaUrl = m.media_url_https;
+                if (m.type === 'photo' && mediaUrl) {
+                    const match = mediaUrl.match(/^(https?:\/\/pbs\.twimg\.com\/media\/.+)\.(\w+)$/);
+                    if (match) mediaUrls.push(`${match[1]}?format=${match[2]}&name=orig`);
+                    else mediaUrls.push(mediaUrl);
+                }
+            });
+        }
+
+        const rawTime = Date.parse(targetTweet.legacy.created_at);
+        const createdAt = formatISOTime(targetTweet.legacy.created_at);
+
+        const perfectData = {
+            id,
+            name: username,
+            user_handle: handle,
+            text_short: fullText.slice(0, 60).replace(/\n/g, ' ') + (fullText.length > 60 ? '…' : ''),
+            full_text: fullText,
+            url: `https://x.com/${handle}/status/${id}`,
+            media_urls: [...new Set(mediaUrls)],
+            created_at: createdAt,
+            _rawTime: rawTime
+        };
+
+        API_CACHE.set(id, perfectData);
+        if (API_CACHE.size > 3000) {
+            const firstKey = API_CACHE.keys().next().value;
+            API_CACHE.delete(firstKey);
+        }
+
+        onCache();
+
+        if (STATE.mode === 'AUTO') {
+            if (STATE.dataPool.some(d => d.id === id)) return;
+            if (rawTime < STATE.hourFloor) return;
+
+            const textLower = fullText.toLowerCase();
+            if (activeBlacklist.some(b => textLower.includes(b.toLowerCase()))) return;
+            if (activeKeywords.length > 0 && !activeKeywords.some(k => textLower.includes(k.toLowerCase()))) return;
+
+            STATE.dataPool.push({
+                ...perfectData,
+                captured_at: new Date().toISOString(),
+                source_type: 'API',
+                extra: {
+                    likes: Number(targetTweet.legacy.favorite_count || 0),
+                    retweets: Number(targetTweet.legacy.retweet_count || 0),
+                    replies: Number(targetTweet.legacy.reply_count || 0)
+                }
+            });
+            savePool();
+            renderList();
+        }
+    }
+
+    function extractDataDOM() {
+        if (STATE.mode === 'PAUSE') return;
+
+        let count = 0;
+        let sourceTags = { apiC: 0, dom: 0 };
+
+        document.querySelectorAll('article').forEach(art => {
+            if (STATE.dataPool.length >= CONFIG.poolLimit) return;
+
+            const link = art.querySelector('time')?.closest('a')?.getAttribute('href');
+            const id = link?.split('/').pop();
+            if (!id || STATE.dataPool.some(d => d.id === id)) return;
+
+            let sourceData = null;
+
+            if (API_CACHE.has(id)) {
+                sourceData = { ...API_CACHE.get(id), source_type: 'API-Cache', captured_at: new Date().toISOString() };
+                sourceTags.apiC++;
+            } else {
+                const timeEl = art.querySelector('time');
+                const t = Date.parse(timeEl?.getAttribute('datetime'));
+                const text = art.querySelector('div[data-testid="tweetText"]')?.innerText || "";
+                let username = "Unknown";
+                let handle = "unknown";
+                const userEl = art.querySelector('div[data-testid="User-Name"]');
+                if (userEl) {
+                    const lines = userEl.innerText.split('\n');
+                    username = lines[0] || "Unknown";
+                    handle = (lines.find(s => s.startsWith('@')) || "unknown").replace(/^@+/, '');
+                }
+
+                sourceData = {
+                    id,
+                    name: username,
+                    user_handle: handle,
+                    text_short: text.slice(0, 60).replace(/\n/g, ' ') + (text.length > 60 ? '…' : ''),
+                    full_text: text,
+                    url: `https://x.com${link}`,
+                    media_urls: [],
+                    created_at: formatISOTime(timeEl?.getAttribute('datetime')),
+                    _rawTime: t,
+                    captured_at: new Date().toISOString(),
+                    extra: { likes: 0, retweets: 0, replies: 0 },
+                    source_type: 'DOM'
+                };
+                sourceTags.dom++;
+            }
+
+            if (STATE.mode === 'AUTO' && sourceData._rawTime < STATE.hourFloor) return;
+            const textLower = sourceData.full_text.toLowerCase();
+            if (activeBlacklist.some(b => textLower.includes(b.toLowerCase()))) return;
+            if (activeKeywords.length > 0 && !activeKeywords.some(k => textLower.includes(k.toLowerCase()))) return;
+
+            delete sourceData._rawTime;
+            STATE.dataPool.push(sourceData);
+            count++;
+        });
+
+        if (count > 0) {
+            savePool();
+            renderList();
+            log(`视图提取 ${count} 条 (API缓存:${sourceTags.apiC} DOM兜底:${sourceTags.dom})`);
+        }
+    }
+
+    let manualScrollTimeout;
+    window.addEventListener('scroll', () => {
+        if (STATE.mode !== 'MANUAL') return;
+        clearTimeout(manualScrollTimeout);
+        manualScrollTimeout = setTimeout(() => { extractDataDOM(); }, 1500);
+    });
+
+    async function triggerSoftRefresh() {
+        log('触发软刷新...');
+        const homeBtn = document.querySelector('a[href="/home"]') || document.querySelector('a[aria-label="Home"]');
+        if (homeBtn) {
+            homeBtn.click();
+            await sleep(500);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+            window.scrollTo({ top: 0, behavior: 'auto' });
+        }
+        await sleep(3000);
+    }
+
+    async function runStrictScan(auto) {
+        if (STATE.isScanning || STATE.mode !== 'AUTO') return;
+        STATE.isScanning = true;
+        STATE.scrollDepth = 0;
+        updateStatusUI('SCANNING...');
+        updateHourFloor();
+        updateTimeUI();
+
+        if (!auto) {
+            location.reload();
+            return;
+        } else {
+            await triggerSoftRefresh();
+        }
+
+        await strictScrollLoop();
+
+        if (auto && STATE.dataPool.length > 0) {
+            await sleep(1000);
+            syncToServer();
+        }
+
+        STATE.isScanning = false;
+        updateStatusUI('AUTO-IDLE');
+    }
+
+    async function strictScrollLoop() {
+        if (STATE.mode !== 'AUTO') return;
+        extractDataDOM();
+
+        if (STATE.scrollDepth >= CONFIG.maxScrolls) return;
+        const oldest = getOldestTweetTime();
+        if (oldest && oldest < STATE.hourFloor) return;
+
+        window.scrollBy(0, window.innerHeight * 0.85);
+        STATE.scrollDepth++;
+        updateStatusUI(`SCANNING (${STATE.scrollDepth})`);
+        await sleep(CONFIG.scrollDelay + Math.random() * 800);
+        return strictScrollLoop();
+    }
+
+    const getOldestTweetTime = () => {
+        const times = [...document.querySelectorAll('article time')]
+            .map(t => Date.parse(t.getAttribute('datetime')))
+            .filter(Boolean);
+        return times.length ? Math.min(...times) : null;
+    };
+
+    function startHeartbeat() {
+        if (STATE.timerId) clearInterval(STATE.timerId);
+        STATE.timerId = setInterval(() => {
+            if (STATE.mode === 'AUTO') runStrictScan(true);
+        }, CONFIG.scanInterval);
+    }
+
+    function switchMode(newMode) {
+        STATE.mode = newMode;
+        document.getElementById('btn-mode-auto').className = newMode === 'AUTO' ? 'x-btn btn-green' : 'x-btn btn-dark';
+        document.getElementById('btn-mode-manual').className = newMode === 'MANUAL' ? 'x-btn btn-blue' : 'x-btn btn-dark';
+        document.getElementById('btn-mode-pause').className = newMode === 'PAUSE' ? 'x-btn btn-red' : 'x-btn btn-dark';
+
+        if (newMode === 'AUTO') {
+            updateHourFloor();
+            updateTimeUI();
+            startHeartbeat();
+            updateStatusUI('AUTO-IDLE');
+            log('已切至自动巡航');
+        } else if (newMode === 'MANUAL') {
+            if (STATE.timerId) clearInterval(STATE.timerId);
+            updateStatusUI('MANUAL-LISTEN');
+            updateTimeUI();
+            log('已切至随动监听');
+        } else {
+            if (STATE.timerId) clearInterval(STATE.timerId);
+            updateStatusUI('PAUSED');
+            updateTimeUI();
+            log('系统已暂停');
+        }
+    }
+
+    function syncToServer() {
+        if (!STATE.dataPool.length) return;
+        updateStatusUI('SYNCING...');
+
+        const payload = {
+            auth: CONFIG.authToken,
+            data: STATE.dataPool.map(item => ({
+                id: String(item.id || ''),
+                name: item.name || 'Unknown',
+                user_handle: String(item.user_handle || 'unknown').replace(/^@+/, ''),
+                full_text: item.full_text || '',
+                url: item.url || '',
+                created_at: item.created_at || null,
+                captured_at: item.captured_at || new Date().toISOString(),
+                media_urls: Array.isArray(item.media_urls) ? item.media_urls.filter(Boolean) : [],
+                tags: item.tags || '',
+                extra: {
+                    likes: Number(item.extra?.likes || 0),
+                    retweets: Number(item.extra?.retweets || 0),
+                    replies: Number(item.extra?.replies || 0)
+                }
+            }))
+        };
+
+        GM_xmlhttpRequest({
+            method: 'POST',
+            url: CONFIG.serverUrl,
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Collect-Token': CONFIG.authToken
+            },
+            data: JSON.stringify(payload),
+            onload: r => {
+                let body = null;
+                try {
+                    body = JSON.parse(r.responseText || '{}');
+                } catch (e) {}
+
+                if (r.status === 200 && body?.status === 'success') {
+                    const added = Number(body.added || 0);
+                    if (added > 0) {
+                        STATE.dataPool = [];
+                        savePool();
+                        renderList();
+                        log(`同步成功，新增 ${added} 条`);
+                    } else {
+                        log(`接口成功但新增 0 条，可能是重复数据。file=${body.file || 'unknown'}`);
+                    }
+                } else if (r.status === 403) {
+                    log(`认证失败: ${body?.error || 'token_invalid'}`);
+                } else {
+                    log(`同步失败 Code:${r.status} Body:${(r.responseText || '').slice(0, 120)}`);
+                }
+                updateStatusUI(STATE.mode === 'AUTO' ? 'AUTO-IDLE' : 'MANUAL-LISTEN');
+            },
+            onerror: () => {
+                log('网络连接错误');
+                updateStatusUI(STATE.mode === 'AUTO' ? 'AUTO-IDLE' : 'MANUAL-LISTEN');
+            }
+        });
+    }
+
+    const FAB_ID = 'gemini-fab-v950';
+    const DASH_ID = 'gemini-dash-v950';
+
+    function initStyles() {
+        GM_addStyle(`
+        #${FAB_ID}{ position:fixed;top:50%;right:20px;width:50px;height:50px;background:#1d9bf0;color:#fff;border-radius:50%;text-align:center;line-height:50px;font-size:24px;cursor:pointer;z-index:999999;border:2px solid #fff;box-shadow:0 4px 15px rgba(0,0,0,.4);transition:transform .2s; }
+        #${FAB_ID}:hover { transform:scale(1.1); }
+        #${DASH_ID}{ position:fixed;top:10%;right:80px;width:420px;background:#000;color:#e7e9ea;border:1px solid #2f3336;border-radius:12px;z-index:999999;display:none;flex-direction:column;max-height:85vh;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,monospace }
+        .x-header{padding:12px;background:#16181c;border-bottom:1px solid #2f3336;display:flex;justify-content:space-between;align-items:center;font-weight:bold}
+        .x-status-bar{padding:10px;background:#202327;border-bottom:1px solid #2f3336;font-size:12px}
+        .x-stat-row{display:flex;justify-content:space-between;margin-bottom:4px}
+        .x-stat-label{color:#71767b}.x-stat-val{color:#1d9bf0;font-family:monospace}
+        .x-config-area{padding:10px;border-bottom:1px solid #2f3336;display:flex;flex-direction:column;gap:8px}
+        .x-input-group{display:flex;flex-direction:column;gap:4px}
+        .x-input-label{font-size:10px;color:#71767b;font-weight:bold}
+        .x-input{width:96%;background:#16181c;border:1px solid #333;color:#fff;padding:6px;border-radius:4px;font-size:12px}
+        .x-input-bl{border-color:#5a1e1e;color:#ffb8b8}
+        .x-content{flex:1;overflow-y:auto}
+        .x-item{padding:10px;border-bottom:1px solid #2f3336;display:flex;flex-direction:column;gap:4px}
+        .x-item-header{display:flex;justify-content:space-between;font-size:11px;color:#71767b}
+        .x-user-tag{color:#1d9bf0;font-weight:bold;margin-right:6px}
+        .x-item-body{display:flex;justify-content:space-between}
+        .x-img-count{font-size:10px;background:#2f3336;padding:2px 6px;border-radius:4px;color:#fff;}
+        .x-del-btn{color:#f4212e;font-size:16px;cursor:pointer;margin-left:8px}
+        .x-footer{padding:12px;background:#16181c;border-top:1px solid #2f3336;display:flex;gap:8px;flex-wrap:wrap}
+        .x-btn{flex:1;padding:6px 8px;border:none;border-radius:4px;font-weight:bold;cursor:pointer;font-size:11px}
+        .btn-green{background:#00ba7c;color:#fff}.btn-blue{background:#1d9bf0;color:#fff}.btn-red{background:#f4212e;color:#fff}.btn-gray{background:#eff3f4;color:#000}.btn-dark{background:#2f3336;color:#71767b}
+        .x-log{font-size:10px;color:#71767b;height:18px;overflow:hidden;margin-top:4px}
+        `);
+    }
+
+    function createUI() {
+        initStyles();
+        const fab = document.createElement('div');
+        fab.id = FAB_ID;
+        fab.innerText = 'X';
+        fab.onclick = () => toggleDash();
+        document.body.appendChild(fab);
+
+        const dash = document.createElement('div');
+        dash.id = DASH_ID;
+        dash.innerHTML = `
+            <div class="x-header">
+                <span style="font-size:14px">X-CMD Collector</span>
+                <div style="display:flex;gap:4px">
+                    <button id="btn-mode-auto" class="x-btn btn-green">自动</button>
+                    <button id="btn-mode-manual" class="x-btn btn-dark">随动</button>
+                    <button id="btn-mode-pause" class="x-btn btn-dark">暂停</button>
+                </div>
+            </div>
+            <div class="x-status-bar">
+                <div class="x-stat-row"><span class="x-stat-label">运行状态</span><span id="x-engine-status" class="x-stat-val">AUTO-IDLE</span></div>
+                <div class="x-stat-row"><span class="x-stat-label">当前运行周期</span><span id="x-target-time" class="x-stat-val">--:00</span></div>
+                <div class="x-stat-row"><span class="x-stat-label">待传缓冲池</span><span id="x-pool-count" class="x-stat-val">0</span></div>
+                <div class="x-log" id="x-log-msg">系统已就绪</div>
+            </div>
+            <div class="x-config-area">
+                <div class="x-input-group">
+                    <span class="x-input-label">服务端 /collect URL</span>
+                    <input id="x-input-server" class="x-input" value="${CONFIG.serverUrl}">
+                </div>
+                <div class="x-input-group">
+                    <span class="x-input-label">Collect Token</span>
+                    <input id="x-input-token" class="x-input" value="${CONFIG.authToken}">
+                </div>
+                <div class="x-input-group">
+                    <span class="x-input-label">自动模式扫描频率 (秒)</span>
+                    <input id="x-input-interval" class="x-input" type="number" min="10" value="${CONFIG.scanInterval / 1000}">
+                </div>
+                <div class="x-input-group">
+                    <span class="x-input-label">必须包含关键词</span>
+                    <input id="x-input-kw" class="x-input" value="${CONFIG.keywords}">
+                </div>
+                <div class="x-input-group">
+                    <span class="x-input-label" style="color:#f4212e">屏蔽关键词</span>
+                    <input id="x-input-bl" class="x-input x-input-bl" value="${CONFIG.blacklist}">
+                </div>
+            </div>
+            <div class="x-content" id="x-list"></div>
+            <div class="x-footer">
+                <button class="x-btn btn-gray" id="x-btn-force-dom">提取当前屏</button>
+                <button class="x-btn btn-red" id="x-btn-clear">清空</button>
+                <button class="x-btn btn-blue" id="x-btn-sync">上传同步</button>
+            </div>
+        `;
+        document.body.appendChild(dash);
+
+        document.getElementById('btn-mode-auto').onclick = () => switchMode('AUTO');
+        document.getElementById('btn-mode-manual').onclick = () => switchMode('MANUAL');
+        document.getElementById('btn-mode-pause').onclick = () => switchMode('PAUSE');
+        document.getElementById('x-btn-force-dom').onclick = () => extractDataDOM();
+        document.getElementById('x-btn-sync').onclick = syncToServer;
+
+        document.getElementById('x-btn-clear').onclick = () => {
+            if (confirm('确定清空本地池与底层缓存？')) {
+                STATE.dataPool = [];
+                API_CACHE.clear();
+                savePool();
+                renderList();
+                log('本地数据池与底层缓存已双重清空');
+            }
+        };
+
+        document.getElementById('x-input-server').onchange = (e) => {
+            CONFIG.serverUrl = e.target.value.trim();
+            GM_setValue('server_url_v600', CONFIG.serverUrl);
+            log('服务端地址已更新');
+        };
+
+        document.getElementById('x-input-token').onchange = (e) => {
+            CONFIG.authToken = e.target.value.trim();
+            GM_setValue('collect_token_v600', CONFIG.authToken);
+            log('认证 Token 已更新');
+        };
+
+        const intervalInput = document.getElementById('x-input-interval');
+        intervalInput.onchange = (e) => {
+            let val = parseInt(e.target.value, 10);
+            if (val < 5) val = 5;
+            CONFIG.scanInterval = val * 1000;
+            GM_setValue('scan_interval_v600', CONFIG.scanInterval);
+            log(`扫描频率已更新为: ${val} 秒`);
+            if (STATE.mode === 'AUTO') startHeartbeat();
+        };
+
+        document.getElementById('x-input-kw').onchange = (e) => {
+            CONFIG.keywords = e.target.value;
+            GM_setValue('keywords_v600', CONFIG.keywords);
+            activeKeywords = CONFIG.keywords.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+            log('白名单规则已更新');
+        };
+
+        document.getElementById('x-input-bl').onchange = (e) => {
+            CONFIG.blacklist = e.target.value;
+            GM_setValue('blacklist_v600', CONFIG.blacklist);
+            activeBlacklist = CONFIG.blacklist.split(/[,，]/).map(s => s.trim()).filter(Boolean);
+            log('黑名单规则已更新');
+        };
+
+        renderList();
+        updateTimeUI();
+        switchMode('AUTO');
+    }
+
+    function renderList() {
+        const list = document.getElementById('x-list');
+        const cnt = document.getElementById('x-pool-count');
+        if (!list) return;
+
+        cnt.innerText = STATE.dataPool.length;
+        list.innerHTML = STATE.dataPool.length
+            ? STATE.dataPool.slice().reverse().map(i => `
+                <div class="x-item">
+                    <div class="x-item-header">
+                        <div><span class="x-user-tag">${i.name}</span><span style="opacity:0.6">@${String(i.user_handle || '').replace(/^@+/, '')}</span></div>
+                        <div style="font-family:monospace; color:#00ba7c" title="ISO 时间">
+                            ${(i.created_at || '').slice(11, 16) || '--:--'}
+                        </div>
+                    </div>
+                    <div class="x-item-body">
+                        <div style="flex:1;font-size:12px;margin-top:2px">
+                            ${i.source_type === 'API' ? '<span style="color:#00ba7c;font-size:9px">[API]</span>' :
+                              i.source_type === 'API-Cache' ? '<span style="color:#8a2be2;font-size:9px">[API-C]</span>' :
+                              '<span style="color:#f91880;font-size:9px">[DOM]</span>'}
+                            ${i.media_urls && i.media_urls.length > 0 ? `<span class="x-img-count">${i.media_urls.length}张</span>` : ''}
+                            ${i.text_short}
+                        </div>
+                        <div class="x-del-btn" data-id="${i.id}">×</div>
+                    </div>
+                </div>`).join('')
+            : `<div style="padding:20px;color:#536471;text-align:center;font-size:12px">等待底层 API / 视图提取...</div>`;
+
+        list.querySelectorAll('.x-del-btn').forEach(b => b.onclick = () => {
+            STATE.dataPool = STATE.dataPool.filter(i => i.id !== b.dataset.id);
+            savePool();
+            renderList();
+        });
+    }
+
+    function toggleDash() {
+        const d = document.getElementById(DASH_ID);
+        d.style.display = d.style.display === 'flex' ? 'none' : 'flex';
+    }
+
+    function updateStatusUI(s) {
+        const el = document.getElementById('x-engine-status');
+        if (el) el.innerText = s;
+    }
+
+    function updateTimeUI() {
+        const el = document.getElementById('x-target-time');
+        if (el) {
+            if (STATE.mode === 'AUTO') {
+                const d = new Date();
+                el.innerText = `ISO ${d.toISOString().slice(11, 13)}:00`;
+            } else {
+                el.innerText = '解除时间限制 (随动)';
+            }
+        }
+    }
+
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', createUI);
+    else createUI();
+})();
