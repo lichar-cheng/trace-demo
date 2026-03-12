@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+required=(
+  backend/app.txt
+  backend/models.txt
+  backend/schemas.txt
+  backend/requirements.txt
+  frontend/index.html
+  frontend/src/main.js
+  frontend/src/services/api.js
+  frontend/src/styles.css
+  README.md
+  docs/FULL_DELIVERY.md
+  scripts/bootstrap.sh
+  scripts/run_backend.sh
+  scripts/run_frontend.sh
+)
+
+missing=0
+for f in "${required[@]}"; do
+  if [ ! -f "$f" ]; then
+    echo "[MISSING] $f"
+    missing=1
+  fi
+done
+
+if [ "$missing" -eq 1 ]; then
+  echo "[FAIL] repository is incomplete"
+  exit 1
+fi
+
+echo "[OK] repository files complete"
