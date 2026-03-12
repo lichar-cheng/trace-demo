@@ -11,10 +11,24 @@ from flask_cors import CORS
 from pydantic import ValidationError
 
 BASE_DIR = os.path.dirname(__file__)
-with open(os.path.join(BASE_DIR, "models.txt"), "r", encoding="utf-8") as f:
-    exec(f.read(), globals())
-with open(os.path.join(BASE_DIR, "schemas.txt"), "r", encoding="utf-8") as f:
-    exec(f.read(), globals())
+
+from models import SessionLocal, KolPost, BrowseLog, KnowledgeItem, Topic, EntityProfile, init_db
+from schemas import (
+    KolPostList,
+    BrowseLogList,
+    UrlComparePayload,
+    TrashBatchPayload,
+    PushTgPayload,
+    TopicBuildPayload,
+    TopicAnalyzePayload,
+    YoutubeImportPayload,
+    YoutubeAnalyzePayload,
+    CryptoPullPayload,
+    CryptoBackfillPayload,
+    ChartCapturePayload,
+    ChartAnalyzePayload,
+    BackupPayload,
+)
 
 init_db()
 

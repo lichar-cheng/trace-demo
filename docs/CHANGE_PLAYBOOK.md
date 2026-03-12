@@ -2,9 +2,9 @@
 
 ## 快速定位索引
 
-- 数据模型：`backend/models.txt`
-- 请求模型：`backend/schemas.txt`
-- 后端API：`backend/app.txt`（按 route 名称搜索）
+- 数据模型：`backend/models.py`
+- 请求模型：`backend/schemas.py`
+- 后端API：`backend/app.py`（按 route 名称搜索）
 - 前端请求封装：`frontend/src/services/api.js`
 - 前端页面逻辑：`frontend/src/main.js`
 - 样式：`frontend/src/styles.css`
@@ -12,13 +12,13 @@
 ## 改动模板
 
 ### A. 新增一个接口
-1. 在 `schemas.txt` 新增 payload
-2. 在 `app.txt` 新增 route
+1. 在 `schemas.py` 新增 payload
+2. 在 `app.py` 新增 route
 3. 在 `api.js` 新增函数
 4. 在 `main.js` 接入按钮/事件
 
 ### B. 调整已有接口返回字段
-1. 修改 `app.txt` 返回 JSON
+1. 修改 `app.py` 返回 JSON
 2. 修改 `main.js` 中对应渲染
 3. 若有筛选字段，更新 `createStore` 的 computed
 

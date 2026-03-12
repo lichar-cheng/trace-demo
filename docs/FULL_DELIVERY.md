@@ -5,9 +5,9 @@
 ## 必要文件
 
 ### 后端
-- `backend/app.txt`
-- `backend/models.txt`
-- `backend/schemas.txt`
+- `backend/app.py`
+- `backend/models.py`
+- `backend/schemas.py`
 - `backend/requirements.txt`
 
 ### 前端

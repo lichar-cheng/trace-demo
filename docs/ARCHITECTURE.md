@@ -9,10 +9,10 @@
 ### 后端分层（单文件内按区域组织，后续可平移成多文件）
 
 1. **基础层**（数据库和输入校验）
-   - `backend/models.txt`：SQLAlchemy 模型
-   - `backend/schemas.txt`：Pydantic 入参模型
+   - `backend/models.py`：SQLAlchemy 模型
+   - `backend/schemas.py`：Pydantic 入参模型
 2. **API层**
-   - `backend/app.txt` 中 `api Blueprint`
+   - `backend/app.py` 中 `api Blueprint`
 3. **系统层**
    - `health`、`proxy/x`、`backup`
 
@@ -33,7 +33,7 @@
 - `Topic`：主题聚合结果（短中长期观点）
 - `EntityProfile`：人物画像
 
-> 调整字段时优先改 `models.txt` + `schemas.txt`，然后改对应 API，最后改 `api.js` 和 `main.js` 的 UI 映射。
+> 调整字段时优先改 `models.py` + `schemas.py`，然后改对应 API，最后改 `api.js` 和 `main.js` 的 UI 映射。
 
 ---
 
@@ -55,8 +55,8 @@
 
 ## 4. 开发原则（保证“改局部不动全局”）
 
-1. **改接口**：只动 `app.txt` 对应路由和 `schemas.txt`。
-2. **改数据结构**：只动 `models.txt` + 映射响应结构。
+1. **改接口**：只动 `app.py` 对应路由和 `schemas.py`。
+2. **改数据结构**：只动 `models.py` + 映射响应结构。
 3. **改页面交互**：只动 `main.js` 对应模块区块模板和 action。
 4. **改请求地址或参数**：只动 `services/api.js`。
 5. **改视觉样式**：只动 `styles.css`。

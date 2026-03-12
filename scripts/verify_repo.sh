@@ -4,9 +4,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 required=(
-  backend/app.txt
-  backend/models.txt
-  backend/schemas.txt
+  backend/app.py
+  backend/models.py
+  backend/schemas.py
   backend/requirements.txt
   frontend/index.html
   frontend/src/main.js

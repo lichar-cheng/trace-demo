@@ -7,4 +7,4 @@ source .venv/bin/activate || {
   exit 1
 }
 
-python backend/app.txt
+python backend/app.py
