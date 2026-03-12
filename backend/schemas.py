@@ -1,4 +1,8 @@
 # Last Edited: 2026-03-12
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
@@ -44,6 +48,26 @@ class TrashBatchPayload(BaseModel):
 
 class PushTgPayload(BaseModel):
     url: str
+
+
+class TweetCollectItem(BaseModel):
+    id: str
+    name: Optional[str] = "Unknown"
+    user_handle: Optional[str] = "Unknown"
+    tags: Optional[str] = ""
+    primary_tag: Optional[str] = "自动定时"
+    full_text: str
+    translated_text: Optional[str] = None
+    url: Optional[str] = None
+    created_at: Optional[str] = None
+    captured_at: Optional[str] = None
+    media_urls: List[str] = Field(default_factory=list)
+    extra: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CollectPayload(BaseModel):
+    auth: str
+    data: List[TweetCollectItem] = Field(default_factory=list)
 
 
 class TopicBuildPayload(BaseModel):

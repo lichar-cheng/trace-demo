@@ -24,6 +24,7 @@ bash scripts/run_frontend.sh
 ## 关键能力
 
 - X Library：列表、详情、链接对比、删除、推送 TG（状态标记）
+- X 采集接口：`POST /api/collect`（支持反向时间线去重、自动打标、可选图片本地化）
 - YouTube Library：导入、列表、分析
 - Crypto Metrics：拉取、历史回补、列表
 - Chart Snapshots：采集、分析、列表
@@ -40,3 +41,9 @@ bash scripts/run_frontend.sh
 - 数据库为 SQLite：`backend/data.db`
 - 前端默认请求 `http://localhost:8000`
 - 如端口冲突，改 `frontend/src/services/api.js` 中 `apiBase`
+
+
+## Collect 接口鉴权
+
+- 环境变量：`COLLECT_AUTH_TOKEN`（默认 `1`）
+- 请求体：`{ auth, data[] }`，其中 `data` 支持 `id/full_text/user_handle/url/media_urls/extra`。

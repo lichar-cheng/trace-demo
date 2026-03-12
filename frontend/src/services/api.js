@@ -7,6 +7,7 @@ export const api = {
   listPosts(params){ return axios.get(`${apiBase}/api/posts`, { params }); },
   listBrowse(params){ return axios.get(`${apiBase}/api/browse-log`, { params }); },
   compareUrls(urls){ return axios.post(`${apiBase}/api/compare/urls`, { urls }); },
+  collectX(payload){ return axios.post(`${apiBase}/api/collect`, payload); },
   trashBatch(payload){ return axios.post(`${apiBase}/api/trash/batch`, payload); },
   pushTg(url){ return axios.post(`${apiBase}/api/push/tg`, { url }); },
 
