@@ -1,4 +1,5 @@
 # Last Edited: 2026-03-12
+import hashlib
 import json
 import os
 import re
@@ -7,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 import httpx
+import requests
+from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory
 from flask import Blueprint, Flask, Response, jsonify, request
 from flask_cors import CORS
 from pydantic import ValidationError
@@ -20,6 +23,7 @@ from schemas import (
     UrlComparePayload,
     TrashBatchPayload,
     PushTgPayload,
+    CollectPayload,
     TopicBuildPayload,
     TopicAnalyzePayload,
     YoutubeImportPayload,
@@ -32,6 +36,80 @@ from schemas import (
 )
 
 init_db()
+
+AUTH_TOKEN = os.getenv("COLLECT_AUTH_TOKEN", "1")
+DATA_ROOT_DIR = os.getenv("DATA_ROOT_DIR", str(Path(BASE_DIR).parent / "data" / "x"))
+UPLOAD_DIR = os.path.join(DATA_ROOT_DIR, "uploads")
+IMAGES_DIR = os.path.join(DATA_ROOT_DIR, "images")
+TRASH_DIR = os.path.join(DATA_ROOT_DIR, "trash")
+for _d in [DATA_ROOT_DIR, UPLOAD_DIR, IMAGES_DIR, TRASH_DIR]:
+    os.makedirs(_d, exist_ok=True)
+
+ASSETS_MAP = {
+    "比特币": ["btc", "bitcoin", "大饼", "比特", "sats"],
+    "以太坊": ["eth", "ethereum", "以太", "二饼", "vitalik"],
+    "山寨币": ["sol", "bnb", "doge", "meme", "pepe", "altcoin", "山寨", "土狗"],
+}
+THEMES_MAP = {
+    "宏观": ["macro", "fed", "cpi", "ppi", "rate", "inflation", "美联储", "加息", "降息", "通胀"],
+    "技术": ["technical", "rsi", "macd", "ma", "ema", "support", "技术面", "k线", "支撑", "阻力"],
+    "周期": ["cycle", "bull", "bear", "halving", "周期", "牛市", "熊市", "减半"],
+}
+
+def generate_tags(text: str) -> str:
+    if not text:
+        return ""
+    tags = set()
+    text_lower = text.lower()
+    for mapping in [ASSETS_MAP, THEMES_MAP]:
+        for tag, keywords in mapping.items():
+            if any(k in text_lower for k in keywords):
+                tags.add(tag)
+    return " ".join(sorted(tags))
+
+def read_json_file(filepath):
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read().strip()
+            return json.loads(content) if content else []
+    except Exception:
+        return []
+
+def get_today_filename():
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    return os.path.join(DATA_ROOT_DIR, f"x_collect_{today_str}.json")
+
+def save_images_for_item(item_dict):
+    media_urls = item_dict.get("media_urls", []) or []
+    if not media_urls:
+        item_dict["local_media_paths"] = []
+        return item_dict
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    save_dir = os.path.join(IMAGES_DIR, "auto", today_str)
+    os.makedirs(save_dir, exist_ok=True)
+
+    local_paths = []
+    for url in media_urls:
+        try:
+            url_hash = hashlib.md5(url.encode("utf-8")).hexdigest()[:8]
+            tweet_id = item_dict.get("id", "unknown")
+            filename = f"{tweet_id}_{url_hash}.jpg"
+            file_path = os.path.join(save_dir, filename)
+            if not os.path.exists(file_path):
+                resp = requests.get(url, timeout=12)
+                if resp.status_code == 200:
+                    with open(file_path, "wb") as f:
+                        f.write(resp.content)
+            rel_path = os.path.relpath(file_path, DATA_ROOT_DIR).replace("\\", "/")
+            local_paths.append(rel_path)
+        except Exception:
+            continue
+
+    item_dict["local_media_paths"] = local_paths
+    return item_dict
 
 
 @contextmanager
@@ -602,6 +680,102 @@ onNav();
     return re.sub(r"</head>", head_inject + script + "</head>", html, flags=re.IGNORECASE)
 
 
+@api.post("/collect")
+def collect_data():
+    payload, err = parse_payload(CollectPayload)
+    if err:
+        return err
+    if payload.auth != AUTH_TOKEN:
+        return ok({"error": "token_invalid"}, 403)
+
+    target_file = get_today_filename()
+    current_data = read_json_file(target_file)
+    existing_ids = {item.get("id") for item in current_data if item.get("id")}
+
+    created = 0
+    new_items = []
+    posts_payload = []
+
+    for item in payload.data:
+        if item.id in existing_ids:
+            continue
+        item_dict = item.model_dump()
+        text = item_dict.get("full_text") or ""
+        if not item_dict.get("tags"):
+            item_dict["tags"] = generate_tags(text)
+        item_dict = save_images_for_item(item_dict)
+        item_dict["server_received_at"] = datetime.utcnow().isoformat()
+        new_items.append(item_dict)
+        existing_ids.add(item.id)
+        created += 1
+
+        posts_payload.append(
+            {
+                "kol_handle": item.user_handle or "unknown",
+                "kol_name": item.name or item.user_handle or "unknown",
+                "kol_avatar_url": "",
+                "posted_at": item.created_at,
+                "text": text,
+                "image_urls": item_dict.get("local_media_paths", []),
+                "likes": int(item.extra.get("likes", 0) or 0),
+                "retweets": int(item.extra.get("retweets", 0) or 0),
+                "replies": int(item.extra.get("replies", 0) or 0),
+                "url": item.url or f"https://x.com/{item.user_handle}/status/{item.id}",
+            }
+        )
+
+    if new_items:
+        current_data.extend(new_items)
+        with open(target_file, "w", encoding="utf-8") as f:
+            json.dump(current_data, f, ensure_ascii=False, indent=2)
+
+    if posts_payload:
+        with db_session() as db:
+            for p in posts_payload:
+                exists = db.query(KolPost).filter(KolPost.url == p["url"]).first()
+                if exists:
+                    continue
+                posted_at = None
+                if p.get("posted_at"):
+                    try:
+                        posted_at = datetime.fromisoformat(p["posted_at"].replace("Z", "+00:00"))
+                    except Exception:
+                        posted_at = None
+                post = KolPost(
+                    kol_handle=p["kol_handle"],
+                    kol_name=p["kol_name"],
+                    kol_avatar_url=p["kol_avatar_url"],
+                    posted_at=posted_at,
+                    text=p["text"],
+                    image_urls=",".join(p["image_urls"]),
+                    likes=p["likes"],
+                    retweets=p["retweets"],
+                    replies=p["replies"],
+                    url=p["url"],
+                )
+                db.add(post)
+                db.add(
+                    KnowledgeItem(
+                        source_type="x",
+                        source_subtype="tweet",
+                        title=f"@{p['kol_handle']}",
+                        content_raw=p["text"],
+                        content_cleaned=p["text"],
+                        author_name=p["kol_name"],
+                        publish_time=posted_at,
+                        url=p["url"],
+                        media_paths=",".join(p["image_urls"]),
+                        tags_primary="x",
+                        analysis_status="pending",
+                        push_status="pending",
+                        source_file="collect",
+                        extra_json=json.dumps({"likes": p["likes"], "retweets": p["retweets"], "replies": p["replies"]}, ensure_ascii=False),
+                    )
+                )
+
+    return ok({"status": "success", "added": created, "file": os.path.relpath(target_file, DATA_ROOT_DIR)})
+
+
 def create_app():
     app = Flask(__name__)
     CORS(app, resources={r"/*": {"origins": "*"}})
@@ -610,6 +784,10 @@ def create_app():
     @app.get("/health")
     def health():
         return ok({"status": "ok", "framework": "flask"})
+
+    @app.get("/images/<path:filename>")
+    def get_image(filename):
+        return send_from_directory(IMAGES_DIR, filename)
 
     @app.route("/proxy/x/<path:path>", methods=["GET"])
     @app.route("/proxy/x/", defaults={"path": "home"}, methods=["GET"])
