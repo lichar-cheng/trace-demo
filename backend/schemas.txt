@@ -36,15 +36,6 @@ class UrlComparePayload(BaseModel):
     urls: List[str] = Field(default_factory=list)
 
 
-class TrashBatchPayload(BaseModel):
-    ids: List[int] = Field(default_factory=list)
-    urls: List[str] = Field(default_factory=list)
-
-
-class PushTgPayload(BaseModel):
-    url: str
-
-
 class TopicBuildPayload(BaseModel):
     topic_name: str
     topic_type: str = "event"
