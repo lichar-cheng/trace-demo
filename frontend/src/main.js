@@ -1,144 +1,231 @@
-const { createApp, ref, reactive, onMounted, defineComponent } = Vue;
+const { createApp, reactive, computed, onMounted } = Vue;
+import { api } from './services/api.js';
 
-const createStore = () => {
-  const posts = reactive([]);
-  const logs = reactive([]);
-  const sessionId = Math.random().toString(36).slice(2);
-  const addPosts = (items) => {
-    items.forEach(i=>{
-      if(!i.url) return;
-      if(!posts.find(p=>p.url===i.url)) posts.push(i);
-    })
-  }
-  const addBrowse = (url, kol_handle) => {
-    logs.push({ visited_at: new Date().toISOString(), url, kol_handle, kol_post_url: url, session_id: sessionId })
-  }
-  return { posts, logs, addPosts, addBrowse, sessionId }
+function createStore() {
+  const state = reactive({
+    posts: [],
+    activeIndex: 0,
+    loading: false,
+    filters: {
+      keyword: '',
+      batch: 'all',
+      user: 'any',
+      tags: 'all',
+    },
+    compareInput: '',
+    status: '',
+    syncing: false,
+  });
+
+  const filteredPosts = computed(() => {
+    const keyword = state.filters.keyword.trim().toLowerCase();
+    return state.posts.filter((p) => {
+      if (!keyword) return true;
+      return [p.text, p.kol_handle, p.kol_name, p.url].some((v) => (v || '').toLowerCase().includes(keyword));
+    });
+  });
+
+  const activePost = computed(() => filteredPosts.value[state.activeIndex] || null);
+  const totalAssets = computed(() => state.posts.length.toLocaleString());
+
+  return { state, filteredPosts, activePost, totalAssets };
 }
-const store = createStore()
 
-const EmbeddedBrowser = defineComponent({
-  name: 'EmbeddedBrowser',
-  props: { startPath: { type: String, default: 'home' } },
-  setup(props){
-    const frameRef = ref(null);
-    const storeRef = store;
-    const src = ref(`/proxy/x/${props.startPath}`);
-    const onMsg = (e)=>{
-      const d = e.data;
-      if(!d||!d.type) return;
-      if(d.type==='tweets_visible'){
-        const items = (d.payload?.items||[]).map(x=>({
-          kol_handle: x.kol_handle||'',
-          kol_name: x.kol_name||'',
-          kol_avatar_url: x.kol_avatar_url||'',
-          posted_at: null,
-          text: x.text||'',
-          image_urls: x.image_urls||[],
-          likes: x.likes||0,
-          retweets: x.retweets||0,
-          replies: x.replies||0,
-          url: x.url
-        }))
-        store.addPosts(items)
+const store = createStore();
+
+createApp({
+  setup() {
+    const { state, filteredPosts, activePost, totalAssets } = store;
+
+    const loadPosts = async () => {
+      state.loading = true;
+      try {
+        const { data } = await api.listPosts({ limit: 200 });
+        state.posts = data || [];
+        state.activeIndex = 0;
+      } finally {
+        state.loading = false;
       }
-      if(d.type==='browse'){
-        const url = d.payload?.url
-        store.addBrowse(url, '')
+    };
+
+    const syncNow = async () => {
+      if (state.syncing) return;
+      state.syncing = true;
+      try {
+        state.status = `已同步到后台：${new Date().toLocaleTimeString()}`;
+      } finally {
+        state.syncing = false;
       }
-    }
-    onMounted(()=>{
-      window.addEventListener('message', onMsg)
-    })
-    return { frameRef, src, store: storeRef }
+    };
+
+    const compareUrls = async () => {
+      const urls = state.compareInput.split('\n').map((u) => u.trim()).filter(Boolean);
+      if (!urls.length) {
+        state.status = '请输入至少一个链接';
+        return;
+      }
+      const { data } = await api.compareUrls(urls);
+      state.status = `对比完成：存在 ${data.exists.length}，缺失 ${data.missing.length}`;
+    };
+
+    const batchDelete = () => {
+      state.status = '批量删除功能：待接入 /api/trash/batch';
+    };
+
+    const exportJson = () => {
+      const blob = new Blob([JSON.stringify(filteredPosts.value, null, 2)], { type: 'application/json;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `x-library-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      state.status = '已导出当前筛选数据';
+    };
+
+    onMounted(loadPosts);
+
+    return {
+      state,
+      filteredPosts,
+      activePost,
+      totalAssets,
+      loadPosts,
+      syncNow,
+      compareUrls,
+      batchDelete,
+      exportJson,
+    };
   },
   template: `
-    <div class="panel p-2 h-full flex flex-col">
-      <div class="flex items-center justify-between mb-2">
-        <div class="text-sm text-gray-600">会话: {{ store.sessionId }}</div>
-        <div class="flex gap-2">
-          <input class="border rounded px-2 py-1 w-96" v-model="src" />
-          <button class="px-3 py-1 bg-blue-600 text-white rounded" @click="()=>{ }">跳转</button>
+    <div class="x-app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-title">CryptoAnalytics</div>
+          <div class="brand-sub">DATA MANAGEMENT</div>
         </div>
-      </div>
-      <iframe :src="src" ref="frameRef" class="flex-1 w-full" sandbox="allow-scripts allow-same-origin allow-forms allow-popups" ></iframe>
-    </div>
-  `
-})
 
-const CapturePanel = defineComponent({
-  name: 'CapturePanel',
-  setup(){
-    return { store }
-  },
-  template: `
-    <div class="panel p-3">
-      <div class="font-semibold mb-2">采集数据</div>
-      <div class="grid grid-cols-2 gap-3">
-        <div>
-          <div class="text-sm mb-2">帖子（{{ store.posts.length }}）</div>
-          <div class="list space-y-2">
-            <div v-for="p in store.posts" :key="p.url" class="p-2 border rounded">
-              <div class="text-sm font-medium">{{ p.kol_handle }}</div>
-              <div class="text-sm mono break-words">{{ p.url }}</div>
-              <div class="text-sm text-gray-700">{{ p.text.slice(0,140) }}</div>
-              <div class="text-xs text-gray-500">👍 {{ p.likes }} 🔁 {{ p.retweets }} 💬 {{ p.replies }}</div>
+        <nav class="menu">
+          <a class="menu-item">Dashboard</a>
+          <a class="menu-item active">X Library</a>
+          <a class="menu-item">YouTube Library</a>
+          <a class="menu-item">Crypto Metrics</a>
+          <a class="menu-item">Chart Snapshots</a>
+        </nav>
+
+        <div class="sidebar-bottom">
+          <a class="menu-item">Settings</a>
+          <div class="plan-card">
+            <div class="plan-title">PRO PLAN</div>
+            <div class="plan-desc">Access advanced analytics and filters.</div>
+            <button class="btn btn-primary full">Upgrade Plan</button>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="top">
+          <div>
+            <h1>X Library</h1>
+            <p>{{ totalAssets }} total assets synced</p>
+          </div>
+          <div class="actions">
+            <button class="btn" @click="batchDelete">Batch Delete</button>
+            <button class="btn" @click="exportJson">Export</button>
+            <button class="btn btn-primary">+ Add New Asset</button>
+          </div>
+        </header>
+
+        <section class="filters">
+          <input v-model="state.filters.keyword" placeholder="Search by keywords, users, or tags..." />
+          <select v-model="state.filters.batch"><option value="all">Batch: All</option></select>
+          <select v-model="state.filters.user"><option value="any">User: Any</option></select>
+          <select v-model="state.filters.tags"><option value="all">Tags: All</option></select>
+          <button class="btn" @click="syncNow">{{ state.syncing ? 'Syncing...' : 'Save' }}</button>
+        </section>
+
+        <section class="workspace">
+          <div class="list panel">
+            <div class="list-scroll" v-if="!state.loading">
+              <article
+                v-for="(post, idx) in filteredPosts"
+                :key="post.url || idx"
+                class="row"
+                :class="{active: idx===state.activeIndex}"
+                @click="state.activeIndex=idx"
+              >
+                <div class="avatar">{{ (post.kol_handle || 'U').slice(0,2).toUpperCase() }}</div>
+                <div class="row-body">
+                  <div class="row-head">
+                    <strong>{{ post.kol_name || post.kol_handle || 'Unknown' }}</strong>
+                    <span>{{ ((post.created_at || '').replace('T',' ').slice(5,16)) || 'now' }}</span>
+                  </div>
+                  <div class="handle">@{{ post.kol_handle || 'unknown' }}</div>
+                  <div class="snippet">{{ post.text || 'No content' }}</div>
+                </div>
+              </article>
+            </div>
+            <div class="empty" v-else>Loading...</div>
+          </div>
+
+          <div class="detail panel" v-if="activePost">
+            <div class="detail-head">
+              <div class="profile">
+                <div class="big-avatar">{{ (activePost.kol_handle || 'U').slice(0,2).toUpperCase() }}</div>
+                <div>
+                  <h2>{{ activePost.kol_name || activePost.kol_handle }}</h2>
+                  <div class="handle">@{{ activePost.kol_handle }} · {{ activePost.posted_at || activePost.created_at }}</div>
+                  <div class="badges">
+                    <span class="badge green">Pushed to Telegram</span>
+                    <span class="badge purple">Stored</span>
+                  </div>
+                </div>
+              </div>
+              <div class="icons">⋯</div>
+            </div>
+
+            <div class="texts">
+              <div class="text-card">
+                <h4>ORIGINAL TEXT</h4>
+                <p>{{ activePost.text }}</p>
+              </div>
+              <div class="text-card">
+                <h4>TRANSLATED TEXT (AI)</h4>
+                <p>{{ activePost.translated_text || '暂无译文' }}</p>
+              </div>
+            </div>
+
+            <div class="media" v-if="activePost.image_urls && activePost.image_urls.length">
+              <h4>MEDIA ATTACHMENTS</h4>
+              <div class="media-grid">
+                <img v-for="img in activePost.image_urls" :src="img" :key="img" alt="media" />
+              </div>
+            </div>
+
+            <div class="tags">
+              <span class="tag">#Bitcoin</span>
+              <span class="tag">#TechnicalAnalysis</span>
+              <span class="tag">#Bullish</span>
+            </div>
+
+            <div class="stats">❤ {{ activePost.likes || 0 }} · 🔁 {{ activePost.retweets || 0 }} · 👁 {{ activePost.replies || 0 }}</div>
+
+            <div class="footer-actions">
+              <button class="btn btn-danger">Delete</button>
+              <button class="btn">Edit Post</button>
+              <button class="btn btn-primary flex1">Push to Telegram Channel</button>
             </div>
           </div>
-        </div>
-        <div>
-          <div class="text-sm mb-2">浏览记录（{{ store.logs.length }}）</div>
-          <div class="list space-y-2">
-            <div v-for="l in store.logs" :key="l.visited_at + l.url" class="p-2 border rounded">
-              <div class="text-sm mono">{{ l.visited_at }}</div>
-              <div class="text-sm break-words">{{ l.url }}</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  `
-})
 
-import { api } from './services/api.js'
+          <div class="detail panel empty" v-else>No post selected</div>
+        </section>
 
-const App = defineComponent({
-  name: 'App',
-  components: { EmbeddedBrowser, CapturePanel },
-  setup(){
-    const storeRef = store;
-    const syncing = ref(false);
-    const sync = async ()=>{
-      if(syncing.value) return;
-      syncing.value = true;
-      const posts = storeRef.posts.splice(0, storeRef.posts.length);
-      const logs = storeRef.logs.splice(0, storeRef.logs.length);
-      if(posts.length) await api.syncPosts(posts);
-      if(logs.length) await api.syncBrowse(logs);
-      syncing.value = false;
-    }
-    onMounted(()=>{
-      setInterval(sync, 5000)
-    })
-    return { store: storeRef, syncing, sync }
-  },
-  template: `
-    <div class="h-full flex flex-col">
-      <header class="p-3 bg-white border-b">
-        <div class="max-w-7xl mx-auto flex items-center justify-between">
-          <div class="text-lg font-semibold">X 嵌入浏览与采集（Vue 3 + Python）</div>
-          <div class="flex items-center gap-2">
-            <button class="px-3 py-1 bg-green-600 text-white rounded" @click="sync">立即同步</button>
-            <span class="text-sm" v-if="syncing">同步中…</span>
-          </div>
-        </div>
-      </header>
-      <main class="max-w-7xl mx-auto p-3 grid grid-cols-3 gap-3 flex-1 w-full">
-        <div class="col-span-2 h-[78vh]"><EmbeddedBrowser/></div>
-        <div class="h-[78vh]"><CapturePanel/></div>
+        <section class="utility panel">
+          <div class="utility-title">URL 对比工具</div>
+          <textarea v-model="state.compareInput" placeholder="每行一个 X 帖子链接"></textarea>
+          <button class="btn" @click="compareUrls">执行对比</button>
+          <span class="status">{{ state.status }}</span>
+        </section>
       </main>
     </div>
-  `
-})
-
-createApp(App).mount('#app')
+  `,
+}).mount('#app');
