@@ -1,176 +1,435 @@
+import json
 import os
 import re
-from typing import Optional
-from fastapi import FastAPI, Depends, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
-import httpx
-from sqlalchemy.orm import Session
+from contextlib import contextmanager
+from datetime import datetime
+from pathlib import Path
 
-# 将 models.txt 与 schemas.txt 动态加载到当前命名空间
+import httpx
+from flask import Blueprint, Flask, jsonify, request, Response
+from flask_cors import CORS
+from pydantic import ValidationError
+
 BASE_DIR = os.path.dirname(__file__)
 with open(os.path.join(BASE_DIR, "models.txt"), "r", encoding="utf-8") as f:
     exec(f.read(), globals())
 with open(os.path.join(BASE_DIR, "schemas.txt"), "r", encoding="utf-8") as f:
     exec(f.read(), globals())
 
-app = FastAPI()
+init_db()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-def get_db():
+@contextmanager
+def db_session():
     db = SessionLocal()
     try:
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
-init_db()
 
-@app.post("/api/posts/bulk")
-def create_posts(payload: KolPostList, db: Session = Depends(get_db)):
+def parse_payload(schema_cls):
+    payload = request.get_json(silent=True) or {}
+    try:
+        return schema_cls(**payload), None
+    except ValidationError as e:
+        return None, jsonify({"error": "validation_error", "detail": e.errors()}), 400
+
+
+def ok(data, status=200):
+    return jsonify(data), status
+
+
+api = Blueprint("api", __name__, url_prefix="/api")
+
+
+@api.post("/posts/bulk")
+def create_posts():
+    payload, err = parse_payload(KolPostList)
+    if err:
+        return err
+
     created = 0
-    for item in payload.items:
-        exists = db.query(KolPost).filter(KolPost.url == item.url).first()
-        if exists:
-            continue
-        post = KolPost(
-            kol_handle=item.kol_handle,
-            kol_name=item.kol_name,
-            kol_avatar_url=item.kol_avatar_url,
-            posted_at=item.posted_at,
-            text=item.text,
-            image_urls=",".join(item.image_urls),
-            likes=item.likes or 0,
-            retweets=item.retweets or 0,
-            replies=item.replies or 0,
-            url=item.url,
-        )
-        db.add(post)
-        created += 1
-    db.commit()
-    return {"created": created}
+    with db_session() as db:
+        for item in payload.items:
+            exists = db.query(KolPost).filter(KolPost.url == item.url).first()
+            if exists:
+                continue
+            post = KolPost(
+                kol_handle=item.kol_handle,
+                kol_name=item.kol_name,
+                kol_avatar_url=item.kol_avatar_url,
+                posted_at=item.posted_at,
+                text=item.text,
+                image_urls=",".join(item.image_urls),
+                likes=item.likes or 0,
+                retweets=item.retweets or 0,
+                replies=item.replies or 0,
+                url=item.url,
+            )
+            db.add(post)
+            db.add(
+                KnowledgeItem(
+                    source_type="x",
+                    source_subtype="tweet",
+                    title=f"@{item.kol_handle}",
+                    content_raw=item.text,
+                    content_cleaned=item.text,
+                    author_name=item.kol_name or item.kol_handle,
+                    publish_time=item.posted_at,
+                    url=item.url,
+                    media_paths=",".join(item.image_urls),
+                    tags_primary="x",
+                    analysis_status="pending",
+                    source_file="auto:posts_bulk",
+                    extra_json=json.dumps({"likes": item.likes, "retweets": item.retweets, "replies": item.replies}),
+                )
+            )
+            created += 1
+    return ok({"created": created})
 
-@app.get("/api/posts")
-def list_posts(
-    kol_handle: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=200),
-    db: Session = Depends(get_db),
-):
-    q = db.query(KolPost)
-    if kol_handle:
-        q = q.filter(KolPost.kol_handle == kol_handle)
-    items = q.order_by(KolPost.id.desc()).limit(limit).all()
-    return [
+
+@api.get("/posts")
+def list_posts():
+    kol_handle = request.args.get("kol_handle")
+    limit = max(1, min(int(request.args.get("limit", 50)), 200))
+    with db_session() as db:
+        q = db.query(KolPost)
+        if kol_handle:
+            q = q.filter(KolPost.kol_handle == kol_handle)
+        items = q.order_by(KolPost.id.desc()).limit(limit).all()
+
+    return ok([
         {
             "id": i.id,
             "kol_handle": i.kol_handle,
             "kol_name": i.kol_name,
             "kol_avatar_url": i.kol_avatar_url,
-            "posted_at": i.posted_at,
+            "posted_at": i.posted_at.isoformat() if i.posted_at else None,
             "text": i.text,
             "image_urls": i.image_urls.split(",") if i.image_urls else [],
             "likes": i.likes,
             "retweets": i.retweets,
             "replies": i.replies,
             "url": i.url,
-            "created_at": i.created_at,
+            "created_at": i.created_at.isoformat() if i.created_at else None,
         }
         for i in items
-    ]
+    ])
 
-@app.post("/api/browse-log")
-def create_browse_logs(payload: BrowseLogList, db: Session = Depends(get_db)):
-    for item in payload.items:
-        log = BrowseLog(
-            visited_at=item.visited_at,
-            url=item.url,
-            kol_handle=item.kol_handle,
-            kol_post_url=item.kol_post_url,
-            session_id=item.session_id,
-        )
-        db.add(log)
-    db.commit()
-    return {"created": len(payload.items)}
 
-@app.get("/api/browse-log")
-def list_browse_logs(
-    limit: int = Query(100, ge=1, le=500),
-    db: Session = Depends(get_db),
-):
-    items = db.query(BrowseLog).order_by(BrowseLog.id.desc()).limit(limit).all()
-    return [
+@api.post("/browse-log")
+def create_browse_logs():
+    payload, err = parse_payload(BrowseLogList)
+    if err:
+        return err
+
+    with db_session() as db:
+        for item in payload.items:
+            db.add(
+                BrowseLog(
+                    visited_at=item.visited_at,
+                    url=item.url,
+                    kol_handle=item.kol_handle,
+                    kol_post_url=item.kol_post_url,
+                    session_id=item.session_id,
+                )
+            )
+
+    return ok({"created": len(payload.items)})
+
+
+@api.get("/browse-log")
+def list_browse_logs():
+    limit = max(1, min(int(request.args.get("limit", 100)), 500))
+    with db_session() as db:
+        items = db.query(BrowseLog).order_by(BrowseLog.id.desc()).limit(limit).all()
+
+    return ok([
         {
             "id": i.id,
-            "visited_at": i.visited_at,
+            "visited_at": i.visited_at.isoformat() if i.visited_at else None,
             "url": i.url,
             "kol_handle": i.kol_handle,
             "kol_post_url": i.kol_post_url,
             "session_id": i.session_id,
         }
         for i in items
-    ]
+    ])
+
+
+@api.post("/compare/urls")
+def compare_urls():
+    payload, err = parse_payload(UrlComparePayload)
+    if err:
+        return err
+    normalized = [u.strip() for u in payload.urls if u.strip()]
+    result = []
+
+    with db_session() as db:
+        for url in normalized:
+            match = db.query(KolPost).filter(KolPost.url == url).first()
+            result.append(
+                {
+                    "url": url,
+                    "exists": bool(match),
+                    "record": {"id": match.id, "kol_handle": match.kol_handle, "text": (match.text or "")[:120]} if match else None,
+                }
+            )
+
+    return ok({
+        "total": len(normalized),
+        "exists": [r for r in result if r["exists"]],
+        "missing": [r for r in result if not r["exists"]],
+        "result": result,
+    })
+
+
+@api.post("/topics/build")
+def build_topic():
+    payload, err = parse_payload(TopicBuildPayload)
+    if err:
+        return err
+
+    with db_session() as db:
+        topic = Topic(
+            topic_name=payload.topic_name,
+            topic_type=payload.topic_type,
+            description=payload.description,
+            related_item_ids=",".join(str(i) for i in payload.item_ids),
+        )
+        db.add(topic)
+        db.flush()
+        topic_id = topic.id
+
+    return ok({"id": topic_id, "topic_name": payload.topic_name})
+
+
+@api.get("/topics")
+def list_topics():
+    with db_session() as db:
+        items = db.query(Topic).order_by(Topic.id.desc()).all()
+
+    return ok([
+        {"id": t.id, "topic_name": t.topic_name, "topic_type": t.topic_type, "updated_at": t.updated_at.isoformat() if t.updated_at else None}
+        for t in items
+    ])
+
+
+@api.get("/topics/<int:topic_id>")
+def get_topic(topic_id):
+    with db_session() as db:
+        topic = db.query(Topic).filter(Topic.id == topic_id).first()
+        if not topic:
+            return ok({"error": "topic_not_found"}, 404)
+        related_ids = [int(i) for i in topic.related_item_ids.split(",") if i] if topic.related_item_ids else []
+        related_items = db.query(KnowledgeItem).filter(KnowledgeItem.id.in_(related_ids)).all() if related_ids else []
+
+        result = {
+            "id": topic.id,
+            "topic_name": topic.topic_name,
+            "topic_type": topic.topic_type,
+            "description": topic.description,
+            "short_term_view": topic.short_term_view,
+            "mid_term_view": topic.mid_term_view,
+            "long_term_view": topic.long_term_view,
+            "analysis_result": topic.analysis_result,
+            "related_items": [{"id": i.id, "title": i.title, "source_type": i.source_type, "url": i.url} for i in related_items],
+        }
+    return ok(result)
+
+
+@api.post("/topics/<int:topic_id>/analyze")
+def analyze_topic(topic_id):
+    payload, err = parse_payload(TopicAnalyzePayload)
+    if err:
+        return err
+    with db_session() as db:
+        topic = db.query(Topic).filter(Topic.id == topic_id).first()
+        if not topic:
+            return ok({"error": "topic_not_found"}, 404)
+        focus = payload.focus or "事件"
+        topic.short_term_view = f"短期：{focus}热度提升，观点分歧明显。"
+        topic.mid_term_view = f"中期：{focus}进入验证阶段，信息噪声下降。"
+        topic.long_term_view = f"长期：{focus}将回归基本面与执行结果。"
+        topic.analysis_result = "\n".join([topic.short_term_view, topic.mid_term_view, topic.long_term_view])
+        analysis_result = topic.analysis_result
+    return ok({"topic_id": topic_id, "analysis_result": analysis_result})
+
+
+@api.post("/youtube/import")
+@api.post("/youtube/import/batch")
+def youtube_import():
+    payload, err = parse_payload(YoutubeImportPayload)
+    if err:
+        return err
+
+    created = 0
+    with db_session() as db:
+        for url in payload.urls:
+            db.add(
+                KnowledgeItem(
+                    source_type="youtube",
+                    source_subtype="subtitle",
+                    title=f"YouTube: {url}",
+                    content_raw="字幕原文（待抓取）",
+                    content_cleaned="",
+                    author_name=payload.channel_name,
+                    publish_time=payload.start_time,
+                    url=url,
+                    tags_primary="youtube",
+                    source_file="manual:youtube_import",
+                )
+            )
+            created += 1
+
+    return ok({"created": created})
+
+
+@api.post("/crypto/pull")
+def crypto_pull():
+    payload, err = parse_payload(CryptoPullPayload)
+    if err:
+        return err
+
+    extra = {
+        "metric_name": payload.metric_name,
+        "symbol": payload.symbol,
+        "market_type": payload.market_type,
+        "interval": payload.interval,
+        "value": payload.value,
+        "timestamp": (payload.timestamp or datetime.utcnow()).isoformat(),
+    }
+
+    with db_session() as db:
+        db.add(
+            KnowledgeItem(
+                source_type="crypto_metric",
+                source_subtype=payload.metric_name,
+                title=f"{payload.symbol} {payload.metric_name}",
+                content_raw=json.dumps(extra, ensure_ascii=False),
+                content_cleaned=json.dumps(extra, ensure_ascii=False),
+                publish_time=payload.timestamp,
+                tags_primary="crypto",
+                source_file="api:crypto_pull",
+                extra_json=json.dumps(extra, ensure_ascii=False),
+            )
+        )
+
+    return ok({"status": "ok"})
+
+
+@api.post("/charts/capture")
+def chart_capture():
+    payload, err = parse_payload(ChartCapturePayload)
+    if err:
+        return err
+
+    with db_session() as db:
+        db.add(
+            KnowledgeItem(
+                source_type="chart_snapshot",
+                source_subtype=payload.platform,
+                title=f"{payload.platform} {payload.symbol or ''} {payload.timeframe}",
+                url=payload.page_url,
+                media_paths=payload.image_path,
+                publish_time=datetime.utcnow(),
+                tags_primary="chart",
+                source_file="api:charts_capture",
+                extra_json=json.dumps({"timeframe": payload.timeframe}, ensure_ascii=False),
+            )
+        )
+
+    return ok({"status": "captured"})
+
+
+@api.post("/backup/run")
+def run_backup():
+    payload, err = parse_payload(BackupPayload)
+    if err:
+        return err
+
+    target = Path(payload.target_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    src = Path(BASE_DIR) / "data.db"
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    dst = target / f"data_{stamp}.db"
+    if src.exists():
+        dst.write_bytes(src.read_bytes())
+    return ok({"backup": str(dst), "exists": dst.exists()})
+
 
 def inject_script(html: str) -> str:
-    script = (
-        "<script>"
-        "const send=(t,p)=>parent.postMessage({type:t,payload:p},'*');"
-        "const norm=(s)=>{if(!s)return'';return s.replace(/\\s+/g,' ').trim();};"
-        "const selTweets=()=>Array.from(document.querySelectorAll('a[href*=\\"/status/\\"]')).map(a=>{"
-        "const abs=a.href;"
-        "const m=abs.match(/https?:\\/\\/twitter\\.com\\/([^\\/]+)\\/status\\/(\\d+)/);"
-        "const handle=m?m[1]:'';"
-        "let article=a.closest('article');"
-        "let text='';"
-        "if(article){text=norm(article.innerText);}"
-        "let avatar='';"
-        "const img=article?article.querySelector('img[src*=\\"twimg\\"]'):null;"
-        "if(img){avatar=img.src}"
-        "let likes=0,reposts=0,replies=0;"
-        "Array.from(article?article.querySelectorAll('[aria-label]'):[]).forEach(el=>{"
-        "const l=el.getAttribute('aria-label')||'';"
-        "const n=parseInt((l.match(/\\\d+/)||['0'])[0]);"
-        "if(/Like/i.test(l))likes=n;"
-        "if(/Reply/i.test(l))replies=n;"
-        "if(/Repost|Retweet/i.test(l))reposts=n;"
-        "});"
-        "let imgs=[];"
-        "Array.from(article?article.querySelectorAll('img[src*=\\"twimg.com\\"]'):[]).forEach(i=>{imgs.push(i.src)});"
-        "return {url:abs,kol_handle:handle,kol_name:handle,kol_avatar_url:avatar,text:text,image_urls:imgs,likes:likes,retweets:reposts,replies:replies};"
-        "});"
-        "const pushVisible=()=>{const items=selTweets();send('tweets_visible',{items});};"
-        "const onNav=()=>{send('browse',{url:location.href});};"
-        "const mo=new MutationObserver(()=>{pushVisible()});"
-        "mo.observe(document.documentElement,{childList:true,subtree:true});"
-        "document.addEventListener('click',e=>{const a=e.target.closest('a');if(a&&a.href.includes('/status/')){setTimeout(()=>pushVisible(),500);}});"
-        "setInterval(()=>pushVisible(),3000);"
-        "onNav();"
-        "</script>"
-    )
+    script = """
+<script>
+const send=(t,p)=>parent.postMessage({type:t,payload:p},'*');
+const norm=(s)=>{if(!s)return'';return s.replace(/\s+/g,' ').trim();};
+const selTweets=()=>Array.from(document.querySelectorAll('a[href*="/status/"]')).map(a=>{
+  const abs=a.href;
+  const m=abs.match(/https?:\/\/twitter\.com\/([^\/]+)\/status\/(\d+)/);
+  const handle=m?m[1]:'';
+  let article=a.closest('article');
+  let text='';
+  if(article){text=norm(article.innerText);}
+  let avatar='';
+  const img=article?article.querySelector('img[src*="twimg"]'):null;
+  if(img){avatar=img.src}
+  let likes=0,reposts=0,replies=0;
+  Array.from(article?article.querySelectorAll('[aria-label]'):[]).forEach(el=>{
+    const l=el.getAttribute('aria-label')||'';
+    const n=parseInt((l.match(/\d+/)||['0'])[0]);
+    if(/Like/i.test(l))likes=n;
+    if(/Reply/i.test(l))replies=n;
+    if(/Repost|Retweet/i.test(l))reposts=n;
+  });
+  let imgs=[];
+  Array.from(article?article.querySelectorAll('img[src*="twimg.com"]'):[]).forEach(i=>{imgs.push(i.src)});
+  return {url:abs,kol_handle:handle,kol_name:handle,kol_avatar_url:avatar,text:text,image_urls:imgs,likes:likes,retweets:reposts,replies:replies};
+});
+const pushVisible=()=>{const items=selTweets();send('tweets_visible',{items});};
+const onNav=()=>{send('browse',{url:location.href});};
+const mo=new MutationObserver(()=>{pushVisible()});
+mo.observe(document.documentElement,{childList:true,subtree:true});
+document.addEventListener('click',e=>{const a=e.target.closest('a');if(a&&a.href.includes('/status/')){setTimeout(()=>pushVisible(),500);}});
+setInterval(()=>pushVisible(),3000);
+onNav();
+</script>
+"""
     head_inject = "<base href='/proxy/x/'><meta name='viewport' content='width=device-width, initial-scale=1'>"
     return re.sub(r"</head>", head_inject + script + "</head>", html, flags=re.IGNORECASE)
 
-@app.api_route("/proxy/x/{path:path}", methods=["GET"])
-async def proxy_x(path: str = "", q: Optional[str] = None):
-    url = f"https://twitter.com/{path}"
-    params = {}
-    if q:
-        params["q"] = q
-    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
-        r = await client.get(url, params=params, headers={"user-agent": "Mozilla/5.0"})
+
+def create_app():
+    app = Flask(__name__)
+    CORS(app, resources={r"/*": {"origins": "*"}})
+    app.register_blueprint(api)
+
+    @app.get("/health")
+    def health():
+        return ok({"status": "ok", "framework": "flask"})
+
+    @app.route("/proxy/x/<path:path>", methods=["GET"])
+    @app.route("/proxy/x/", defaults={"path": "home"}, methods=["GET"])
+    def proxy_x(path):
+        url = f"https://twitter.com/{path}"
+        q = request.args.get("q")
+        params = {"q": q} if q else None
+        with httpx.Client(follow_redirects=True, timeout=20) as client:
+            r = client.get(url, params=params, headers={"user-agent": "Mozilla/5.0"})
         content_type = r.headers.get("content-type", "text/html")
-        body = r.content
         if "text/html" in content_type:
             html = inject_script(r.text)
-            return Response(content=html, media_type="text/html", headers={"x-frame-options": "ALLOWALL"})
-        return Response(content=body, media_type=content_type)
+            return Response(html, mimetype="text/html", headers={"x-frame-options": "ALLOWALL"})
+        return Response(r.content, mimetype=content_type)
+
+    return app
+
+
+app = create_app()
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=8000, debug=True)
