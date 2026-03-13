@@ -398,5 +398,97 @@
     },
     "local_media_paths": [],
     "server_received_at": "2026-03-13T05:27:37.964061"
+  },
+  {
+    "id": "2032328091436208326",
+    "name": "外汇交易员",
+    "user_handle": "fxtrader",
+    "tags": "technical",
+    "primary_tag": "自动定时",
+    "full_text": "中国商务部：经中美双方商定，中共中央政治局委员、国务院副总理何立峰将于3月14日—17日率团赴法国与美方举行经贸磋商。双方将以两国元首釜山会晤及历次通话重要共识为引领，就彼此关心的经贸问题开展磋商。 https://t.co/Wh8t8MIjoi [引用:] 美国财政部：3月15日-16日，美国财长贝森特将在法国巴黎与中国国务院副总理何立峰会面。\n\n贝森特部长表示：“得益于特朗普总统和习近平主席之间的相互尊重，美中贸易和经济对话正在向前推进。在特朗普总统的领导下，我们的团队将继续努力，把美国农民、工人和企业的利益放在首位。” https://t.co/wgsUmajmwO",
+    "translated_text": null,
+    "url": "https://x.com/fxtrader/status/2032328091436208326",
+    "created_at": "2026-03-13T05:29:10.000Z",
+    "captured_at": "2026-03-13T05:30:38.685Z",
+    "media_urls": [
+      "https://pbs.twimg.com/media/HDRHjZYb0AAc7FK?format=jpg&name=orig"
+    ],
+    "extra": {
+      "likes": 0,
+      "retweets": 1,
+      "replies": 0
+    },
+    "local_media_paths": [
+      "images/auto/2026-03-13/2032328091436208326_6d49469a.jpg"
+    ],
+    "server_received_at": "2026-03-13T05:32:38.281634"
+  },
+  {
+    "id": "2032327949513605134",
+    "name": "白泽",
+    "user_handle": "BTCbaize",
+    "tags": "",
+    "primary_tag": "自动定时",
+    "full_text": "https://t.co/fdZ8ht37KK [引用:] #LAB $LAB \n趋势线三角突破\n看涨预期 https://t.co/Z91XV1k3rS",
+    "translated_text": null,
+    "url": "https://x.com/BTCbaize/status/2032327949513605134",
+    "created_at": "2026-03-13T05:28:36.000Z",
+    "captured_at": "2026-03-13T05:30:38.685Z",
+    "media_urls": [
+      "https://pbs.twimg.com/media/HDRHfdfbwAAG3Ab?format=jpg&name=orig"
+    ],
+    "extra": {
+      "likes": 0,
+      "retweets": 0,
+      "replies": 0
+    },
+    "local_media_paths": [
+      "images/auto/2026-03-13/2032327949513605134_8ce773df.jpg"
+    ],
+    "server_received_at": "2026-03-13T05:32:39.142385"
+  },
+  {
+    "id": "2032327862842507641",
+    "name": "外汇交易员",
+    "user_handle": "fxtrader",
+    "tags": "",
+    "primary_tag": "自动定时",
+    "full_text": "美债“恐慌指数”ICE美银波动指数周三大涨20%至95.3，创去年6月以来新高。\n\n特朗普和伊朗新任领导人穆杰塔巴·哈梅内伊在战争问题上都发表了强硬言论，冲突持续时间不明朗，霍尔木兹海峡运输受阻推动油价上涨，引发滞胀风险担忧。 https://t.co/8CsH1K2OgU",
+    "translated_text": null,
+    "url": "https://x.com/fxtrader/status/2032327862842507641",
+    "created_at": "2026-03-13T05:28:15.000Z",
+    "captured_at": "2026-03-13T05:30:38.685Z",
+    "media_urls": [
+      "https://pbs.twimg.com/media/HDRGQMOb0AAQ9Zx?format=jpg&name=orig"
+    ],
+    "extra": {
+      "likes": 1,
+      "retweets": 1,
+      "replies": 0
+    },
+    "local_media_paths": [
+      "images/auto/2026-03-13/2032327862842507641_d289321c.jpg"
+    ],
+    "server_received_at": "2026-03-13T05:32:39.429466"
+  },
+  {
+    "id": "2032327664787456023",
+    "name": "Balder",
+    "user_handle": "Balder13946731",
+    "tags": "technical",
+    "primary_tag": "自动定时",
+    "full_text": "中美本周末将在巴黎谈判商定双方领导人在北京见面时签署的条款。\n\n预计将涉及关税、台湾、投资以及芯片出口。\n\n$NVDA $BABA $AMD $TSM [引用:] U.S. and Chinese negotiators will meet in Paris this weekend to map out deliverables for Trump’s March 31 to April 2 summit with Xi in Beijing, with talks expected to cover tariffs, fentanyl, Taiwan, Chinese investment in the U.S., and advanced chip exports. https://t.co/ypEgLC15vj",
+    "translated_text": null,
+    "url": "https://x.com/Balder13946731/status/2032327664787456023",
+    "created_at": "2026-03-13T05:27:28.000Z",
+    "captured_at": "2026-03-13T05:30:38.685Z",
+    "media_urls": [],
+    "extra": {
+      "likes": 2,
+      "retweets": 0,
+      "replies": 0
+    },
+    "local_media_paths": [],
+    "server_received_at": "2026-03-13T05:32:39.429561"
   }
 ]

@@ -3,5 +3,6 @@
 .env.*
 !.env.example
 logs/
+scripts/ffmpeg/
 data/x/images/
 data/youtube/audio_lake/
