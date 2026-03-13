@@ -11,6 +11,7 @@ from pathlib import Path
 
 import httpx
 import requests
+from dotenv import load_dotenv
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory, session
 from flask_cors import CORS
 from pydantic import ValidationError
@@ -36,6 +37,8 @@ from schemas import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 init_db()
 
@@ -55,6 +58,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+CORS_ALLOWED_ORIGINS = [item.strip() for item in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if item.strip()]
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 DATA_ROOT_DIR = os.getenv("DATA_ROOT_DIR", str(Path(BASE_DIR).parent / "data" / "x"))
 UPLOAD_DIR = os.path.join(DATA_ROOT_DIR, "uploads")
 IMAGES_DIR = os.path.join(DATA_ROOT_DIR, "images")
@@ -263,6 +268,13 @@ def parse_basic_auth():
         return None, None
     username, password = decoded.split(":", 1)
     return username, password
+
+
+def build_public_url(path: str) -> str:
+    clean_path = f"/{str(path or '').lstrip('/')}"
+    if PUBLIC_BASE_URL:
+        return f"{PUBLIC_BASE_URL}{clean_path}"
+    return clean_path
 
 
 def has_valid_login() -> bool:
@@ -495,7 +507,7 @@ def replace_notion_x_page_body(page_id: str, post_data: dict, extra_payload: dic
             )
 
     for image_url in post_data.get("image_urls") or []:
-        absolute_url = image_url if str(image_url).startswith("http") else f"http://localhost:8000{image_url}"
+        absolute_url = image_url if str(image_url).startswith("http") else build_public_url(image_url)
         blocks.append(
             {
                 "object": "block",
@@ -2031,9 +2043,11 @@ def create_app():
     app.secret_key = APP_SECRET_KEY
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_HTTPONLY"] = True
+    allowed_origins = [r"http://localhost:\d+", r"http://127\.0\.0\.1:\d+"]
+    allowed_origins.extend(CORS_ALLOWED_ORIGINS)
     CORS(
         app,
-        resources={r"/*": {"origins": [r"http://localhost:\d+", r"http://127\.0\.0\.1:\d+"]}},
+        resources={r"/*": {"origins": allowed_origins}},
         supports_credentials=True,
     )
     app.register_blueprint(api)

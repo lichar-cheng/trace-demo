@@ -1,7 +1,27 @@
 const { createApp, reactive, computed, onMounted } = Vue;
 import { api } from './services/api.js';
 
-const API_BASE = 'http://152.32.174.6:8000';
+const normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+const deriveApiBase = () => {
+  const configured = normalizeBaseUrl(window.__TRACE_API_BASE__ || window.TRACE_API_BASE);
+  if (configured) return configured;
+
+  const { hostname, port, origin } = window.location;
+  const isLocalHost = ['localhost', '127.0.0.1'].includes(hostname);
+
+  if (isLocalHost) {
+    return normalizeBaseUrl(`http://${hostname}:8000`);
+  }
+
+  if (port === '8000') {
+    return normalizeBaseUrl(origin);
+  }
+
+  return '';
+};
+
+const API_BASE = deriveApiBase();
 
 createApp({
   setup() {
