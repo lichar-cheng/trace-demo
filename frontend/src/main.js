@@ -39,6 +39,7 @@ createApp({
         posts: [],
         activeIndex: 0,
         keyword: '',
+        selectedUrls: [],
         compareInput: '',
         toolsOpen: false,
         importSummary: '',
@@ -52,6 +53,7 @@ createApp({
       youtube: {
         urlInput: '',
         items: [],
+        selectedIds: [],
         authorFilter: '',
         startTime: '',
         endTime: '',
@@ -121,6 +123,15 @@ createApp({
       return value.startsWith('http') ? value : `${API_BASE}${value}`;
     };
 
+    const toTimestamp = (...values) => {
+      for (const value of values) {
+        if (!value) continue;
+        const timestamp = new Date(value).getTime();
+        if (!Number.isNaN(timestamp)) return timestamp;
+      }
+      return 0;
+    };
+
     const xSourcePosts = computed(() => {
       if (state.x.localPosts.length) {
         const selected = new Set(state.x.selectedDirectories);
@@ -144,12 +155,23 @@ createApp({
         if (!key) return true;
         return [post.text, post.kol_name, post.kol_handle, post.url, post.posted_at, post.sourceDirectory]
           .some((field) => (field || '').toLowerCase().includes(key));
-      });
+      }).slice().sort((a, b) => (
+        toTimestamp(b.posted_at, b.created_at, b.publish_time) - toTimestamp(a.posted_at, a.created_at, a.publish_time)
+      ));
     });
 
     const xActive = computed(() => xFiltered.value[state.x.activeIndex] || null);
+    const xAllSelected = computed(() => (
+      xFiltered.value.length > 0 && xFiltered.value.every((post) => state.x.selectedUrls.includes(post.url))
+    ));
 
-    const youtubeFiltered = computed(() => state.youtube.items);
+    const youtubeFiltered = computed(() => state.youtube.items.slice().sort((a, b) => (
+      toTimestamp(b.publish_time, b.extra?.publish_time, b.extra?.upload_date, b.created_at) -
+      toTimestamp(a.publish_time, a.extra?.publish_time, a.extra?.upload_date, a.created_at)
+    )));
+    const youtubeAllSelected = computed(() => (
+      youtubeFiltered.value.length > 0 && youtubeFiltered.value.every((item) => state.youtube.selectedIds.includes(item.id))
+    ));
     const youtubeActive = computed(() => (
       state.youtube.items.find((item) => item.id === state.youtube.activeId) || youtubeFiltered.value[0] || null
     ));
@@ -334,13 +356,34 @@ createApp({
       state.x.mobilePane = 'list';
     };
 
+    const syncXSelection = () => {
+      const allowed = new Set(xFiltered.value.map((post) => post.url).filter(Boolean));
+      state.x.selectedUrls = state.x.selectedUrls.filter((url) => allowed.has(url));
+    };
+
+    const syncYoutubeSelection = () => {
+      const allowed = new Set(youtubeFiltered.value.map((item) => item.id).filter(Boolean));
+      state.youtube.selectedIds = state.youtube.selectedIds.filter((id) => allowed.has(id));
+    };
+
+    const syncXActive = (preferredUrl = '') => {
+      const targetUrl = preferredUrl || xActive.value?.url || '';
+      const idx = xFiltered.value.findIndex((item) => item.url === targetUrl);
+      state.x.activeIndex = idx >= 0 ? idx : 0;
+      state.x.detailOpen = idx >= 0 ? state.x.detailOpen : false;
+    };
+
     const loadX = async () => safeRun(async () => {
       const { data } = await api.listPosts({ limit: 300 });
+      const currentUrl = xActive.value?.url || '';
       state.x.posts = data;
       await loadXSourceFiles();
-      state.x.activeIndex = 0;
+      syncXSelection();
+      syncXActive(currentUrl);
       state.x.mobilePane = 'list';
-      state.x.detailOpen = false;
+      if (state.x.activeIndex === 0 && !xFiltered.value.length) {
+        state.x.detailOpen = false;
+      }
       setStatus(`Loaded ${data.length} X posts`);
     });
 
@@ -356,10 +399,56 @@ createApp({
 
     const xDelete = async () => {
       if (!xActive.value) return;
+      const target = xActive.value;
+      const label = target.kol_name || target.kol_handle || target.url || 'this post';
+      if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
       await safeRun(async () => {
-        await api.trashBatch({ urls: [xActive.value.url] });
+        await api.trashBatch({ urls: [target.url] });
         await loadX();
         setStatus('Post deleted');
+      });
+    };
+
+    const xDeleteItem = async (item) => {
+      if (!item?.url) return;
+      const label = item.kol_name || item.kol_handle || item.url || 'this post';
+      if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+      await safeRun(async () => {
+        await api.trashBatch({ urls: [item.url] });
+        await loadX();
+        setStatus('Post deleted');
+      });
+    };
+
+    const toggleXSelection = (url) => {
+      if (!url) return;
+      const selected = new Set(state.x.selectedUrls);
+      if (selected.has(url)) {
+        selected.delete(url);
+      } else {
+        selected.add(url);
+      }
+      state.x.selectedUrls = xFiltered.value
+        .map((post) => post.url)
+        .filter((itemUrl) => selected.has(itemUrl));
+    };
+
+    const toggleAllXSelection = () => {
+      if (xAllSelected.value) {
+        state.x.selectedUrls = [];
+      } else {
+        state.x.selectedUrls = xFiltered.value.map((post) => post.url).filter(Boolean);
+      }
+    };
+
+    const deleteSelectedX = async () => {
+      if (!state.x.selectedUrls.length) return;
+      if (!window.confirm(`Delete ${state.x.selectedUrls.length} selected X posts? This cannot be undone.`)) return;
+      await safeRun(async () => {
+        await api.trashBatch({ urls: state.x.selectedUrls });
+        state.x.selectedUrls = [];
+        await loadX();
+        setStatus('Selected X posts deleted');
       });
     };
 
@@ -408,8 +497,10 @@ createApp({
       if (state.youtube.endTime) params.end_time = new Date(state.youtube.endTime).toISOString();
       if (state.youtube.statusFilter) params.analysis_status = state.youtube.statusFilter;
       const { data } = await api.youtubeList(params);
+      const currentId = state.youtube.activeId;
       state.youtube.items = data;
-      state.youtube.activeId = data[0]?.id || null;
+      syncYoutubeSelection();
+      state.youtube.activeId = data.some((item) => item.id === currentId) ? currentId : (youtubeFiltered.value[0]?.id || null);
       state.youtube.mobilePane = 'list';
       state.youtube.detailOpen = false;
       state.youtube.editMode = false;
@@ -483,6 +574,49 @@ createApp({
           return;
         }
         setStatus(`Notion sync ${result?.status || 'done'} for item ${activeId}`);
+      });
+    };
+
+    const deleteYoutubeItem = async (item = youtubeActive.value) => {
+      if (!item?.id) return;
+      const label = displayYoutubeTitle(item);
+      if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return;
+      await safeRun(async () => {
+        await api.youtubeDelete([item.id]);
+        await loadYoutube();
+        setStatus('YouTube item deleted');
+      });
+    };
+
+    const toggleYoutubeSelection = (itemId) => {
+      if (!itemId) return;
+      const selected = new Set(state.youtube.selectedIds);
+      if (selected.has(itemId)) {
+        selected.delete(itemId);
+      } else {
+        selected.add(itemId);
+      }
+      state.youtube.selectedIds = youtubeFiltered.value
+        .map((item) => item.id)
+        .filter((id) => selected.has(id));
+    };
+
+    const toggleAllYoutubeSelection = () => {
+      if (youtubeAllSelected.value) {
+        state.youtube.selectedIds = [];
+      } else {
+        state.youtube.selectedIds = youtubeFiltered.value.map((item) => item.id).filter(Boolean);
+      }
+    };
+
+    const deleteSelectedYoutube = async () => {
+      if (!state.youtube.selectedIds.length) return;
+      if (!window.confirm(`Delete ${state.youtube.selectedIds.length} selected YouTube items? This cannot be undone.`)) return;
+      await safeRun(async () => {
+        await api.youtubeDelete(state.youtube.selectedIds);
+        state.youtube.selectedIds = [];
+        await loadYoutube();
+        setStatus('Selected YouTube items deleted');
       });
     };
 
@@ -693,9 +827,11 @@ createApp({
       state,
       xFiltered,
       xActive,
+      xAllSelected,
       xDirectoryGroups,
       youtubeFiltered,
       youtubeActive,
+      youtubeAllSelected,
       displayYoutubeTitle,
       displayYoutubeAuthor,
       displayYoutubeTime,
@@ -706,6 +842,10 @@ createApp({
       loadYoutube,
       xCompare,
       xDelete,
+      xDeleteItem,
+      toggleXSelection,
+      toggleAllXSelection,
+      deleteSelectedX,
       xPushTg,
       xExport,
       handleImportFile,
@@ -723,6 +863,10 @@ createApp({
       cancelYoutubeEditor,
       saveYoutubeTranscript,
       syncYoutubeToNotion,
+      deleteYoutubeItem,
+      toggleYoutubeSelection,
+      toggleAllYoutubeSelection,
+      deleteSelectedYoutube,
       selectYoutubeItem,
       showYoutubeList,
       showYoutubeDetail,
@@ -786,6 +930,10 @@ createApp({
         <section v-if="state.view === 'x'" class="pane x-layout">
           <div class="toolbar">
             <input v-model="state.x.keyword" placeholder="Search posts, users, URLs..." />
+            <button class="action" @click="toggleAllXSelection">{{ xAllSelected ? 'Clear Visible' : 'Select Visible' }}</button>
+            <button class="action danger" :disabled="!state.x.selectedUrls.length" @click="deleteSelectedX">
+              Delete Selected ({{ state.x.selectedUrls.length }})
+            </button>
             <button class="action" @click="state.x.toolsOpen = !state.x.toolsOpen">{{ state.x.toolsOpen ? 'Hide tools' : 'Tools' }}</button>
           </div>
 
@@ -861,9 +1009,18 @@ createApp({
                 @click="selectXPost(idx)"
               >
                 <div class="row-top">
-                  <div class="title">{{ post.kol_name || post.kol_handle }}</div>
-                  <div class="muted">{{ formatDateTime(post.posted_at || post.created_at) }}</div>
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <input
+                      type="checkbox"
+                      :checked="state.x.selectedUrls.includes(post.url)"
+                      @click.stop
+                      @change="toggleXSelection(post.url)"
+                    />
+                    <div class="title">{{ post.kol_name || post.kol_handle }}</div>
+                  </div>
+                  <button class="action danger" @click.stop="xDeleteItem(post)">Delete</button>
                 </div>
+                <div class="muted">{{ formatDateTime(post.posted_at || post.created_at) }}</div>
                 <div class="muted">@{{ post.kol_handle }}</div>
                 <div class="muted" v-if="post.sourceDirectoryLabel && post.sourceDirectoryLabel !== 'database'">{{ post.sourceDirectoryLabel }}</div>
                 <div class="text clamp-3">{{ post.text }}</div>
@@ -929,6 +1086,10 @@ createApp({
               <option value="failed">failed</option>
             </select>
             <button class="action" @click="loadYoutube">Filter</button>
+            <button class="action" @click="toggleAllYoutubeSelection">{{ youtubeAllSelected ? 'Clear Visible' : 'Select Visible' }}</button>
+            <button class="action danger" :disabled="!state.youtube.selectedIds.length" @click="deleteSelectedYoutube">
+              Delete Selected ({{ state.youtube.selectedIds.length }})
+            </button>
           </div>
 
           <div class="youtube-layout">
@@ -945,7 +1106,18 @@ createApp({
                 :class="{ active: item.id === state.youtube.activeId }"
                 @click="selectYoutubeItem(item.id)"
               >
-                <div class="title">{{ displayYoutubeTitle(item) }}</div>
+                <div class="row-top">
+                  <div style="display:flex; align-items:center; gap:8px;">
+                    <input
+                      type="checkbox"
+                      :checked="state.youtube.selectedIds.includes(item.id)"
+                      @click.stop
+                      @change="toggleYoutubeSelection(item.id)"
+                    />
+                    <div class="title">{{ displayYoutubeTitle(item) }}</div>
+                  </div>
+                  <button class="action danger" @click.stop="deleteYoutubeItem(item)">Delete</button>
+                </div>
                 <div class="muted">{{ displayYoutubeAuthor(item) }}</div>
                 <div class="muted">{{ displayYoutubeTime(item) }}</div>
                 <div class="badge-row">
@@ -990,6 +1162,7 @@ createApp({
 
               <div class="actions-row">
                 <button class="action" @click="closeYoutubeDetail">Close Detail</button>
+                <button class="action danger" @click="deleteYoutubeItem()">Delete</button>
                 <button v-if="!state.youtube.editMode" class="action" @click="openYoutubeEditor">Edit Transcript</button>
                 <button v-if="state.youtube.editMode" class="action primary" @click="saveYoutubeTranscript">Save Transcript</button>
                 <button v-if="state.youtube.editMode" class="action" @click="cancelYoutubeEditor">Cancel Edit</button>
