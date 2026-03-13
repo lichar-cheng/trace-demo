@@ -39,6 +39,8 @@ createApp({
         activeId: null,
         mobilePane: 'list',
         detailOpen: false,
+        editMode: false,
+        editDraft: '',
       },
       crypto: {
         symbol: 'BTCUSDT',
@@ -79,7 +81,9 @@ createApp({
           state.auth.loggedIn = false;
           state.auth.ready = true;
         }
-        setStatus(`Failed: ${error?.response?.data?.error || error.message}`);
+        const responseData = error?.response?.data || {};
+        const detail = responseData.detail || responseData.results?.[0]?.reason || responseData.error || error.message;
+        setStatus(`Failed: ${detail}`);
       } finally {
         state.loading = false;
       }
@@ -144,12 +148,22 @@ createApp({
       if (rawTitle && !/^YouTube:\s*https?:\/\//i.test(rawTitle)) {
         return rawTitle;
       }
+      const isUsableDerivedTitle = (value) => {
+        const normalized = String(value || '').trim();
+        if (!normalized) return false;
+        if (/^manual item \d+$/i.test(normalized)) return false;
+        if (/^manual_item_\d+$/i.test(normalized)) return false;
+        if (/^youtube video [A-Za-z0-9_-]{6,}$/i.test(normalized)) return false;
+        return true;
+      };
       const resultPathMatch = String(item.analysis_result || '').match(/Transcript stored from (.+?\.txt)/i);
       if (resultPathMatch?.[1]) {
-        return prettifyStem(fileNameFromPath(resultPathMatch[1]));
+        const derived = prettifyStem(fileNameFromPath(resultPathMatch[1]));
+        if (isUsableDerivedTitle(derived)) return derived;
       }
       if (item.extra?.txt_path) {
-        return prettifyStem(fileNameFromPath(item.extra.txt_path));
+        const derived = prettifyStem(fileNameFromPath(item.extra.txt_path));
+        if (isUsableDerivedTitle(derived)) return derived;
       }
       const url = item.url || '';
       try {
@@ -168,6 +182,8 @@ createApp({
     const displayYoutubeTime = (item) => {
       return formatDateTime(item?.publish_time || item?.extra?.publish_time || item?.extra?.upload_date || '');
     };
+
+    const isNotionSynced = (item) => !!(item?.notion_synced_at || item?.extra?.notion_synced_at);
 
     const normalizeImportedPost = (item, fallbackIndex = 0) => {
       const text = item.text || item.full_text || item.content_raw || item.content_cleaned || item.summary || '';
@@ -346,9 +362,29 @@ createApp({
 
     const xPushTg = async () => {
       if (!xActive.value) return;
+      if (!xActive.value.id && !xActive.value.url) {
+        setStatus('This X post is missing both id and url');
+        return;
+      }
       await safeRun(async () => {
-        await api.pushTg(xActive.value.url);
-        setStatus('Push status updated');
+        const activeId = xActive.value.id;
+        const activeUrl = xActive.value.url || '';
+        const { data } = await api.xSyncItemToNotion({
+          post_id: activeId || null,
+          url: activeUrl,
+        });
+        await loadX();
+        const idx = xFiltered.value.findIndex((item) => (
+          (activeId && item.id === activeId) || (!activeId && item.url === activeUrl)
+        ));
+        state.x.activeIndex = idx >= 0 ? idx : state.x.activeIndex;
+        state.x.detailOpen = true;
+        const result = data.results?.[0];
+        if (result?.status === 'failed') {
+          setStatus(`Notion sync failed: ${result.reason || data.detail || data.error || 'unknown error'}`);
+          return;
+        }
+        setStatus(`Notion sync ${result?.status || 'done'} for post ${activeId || activeUrl}`);
       });
     };
 
@@ -373,6 +409,8 @@ createApp({
       state.youtube.activeId = data[0]?.id || null;
       state.youtube.mobilePane = 'list';
       state.youtube.detailOpen = false;
+      state.youtube.editMode = false;
+      state.youtube.editDraft = '';
       setStatus(`Loaded ${data.length} YouTube items`);
     });
 
@@ -398,9 +436,58 @@ createApp({
       setStatus(`Analyzed ${data.analyzed} YouTube item`);
     });
 
+    const openYoutubeEditor = () => {
+      if (!youtubeActive.value) return;
+      state.youtube.editMode = true;
+      state.youtube.editDraft = youtubeActive.value.content_raw || youtubeActive.value.content_cleaned || '';
+    };
+
+    const cancelYoutubeEditor = () => {
+      state.youtube.editMode = false;
+      state.youtube.editDraft = '';
+    };
+
+    const saveYoutubeTranscript = async () => {
+      if (!youtubeActive.value) return;
+      const activeId = youtubeActive.value.id;
+      await safeRun(async () => {
+        await api.youtubeSaveTranscript(activeId, state.youtube.editDraft);
+        state.youtube.editMode = false;
+        await loadYoutube();
+        state.youtube.activeId = activeId;
+        state.youtube.detailOpen = true;
+        if (window.innerWidth <= 900) {
+          state.youtube.mobilePane = 'detail';
+        }
+        setStatus('Transcript saved to file');
+      });
+    };
+
+    const syncYoutubeToNotion = async () => {
+      if (!youtubeActive.value) return;
+      const activeId = youtubeActive.value.id;
+      await safeRun(async () => {
+        const { data } = await api.youtubeSyncItemToNotion(activeId);
+        await loadYoutube();
+        state.youtube.activeId = activeId;
+        state.youtube.detailOpen = true;
+        if (window.innerWidth <= 900) {
+          state.youtube.mobilePane = 'detail';
+        }
+        const result = data.results?.[0];
+        if (result?.status === 'failed') {
+          setStatus(`Notion sync failed: ${result.reason || data.detail || 'unknown error'}`);
+          return;
+        }
+        setStatus(`Notion sync ${result?.status || 'done'} for item ${activeId}`);
+      });
+    };
+
     const selectYoutubeItem = (itemId) => {
       state.youtube.activeId = itemId;
       state.youtube.detailOpen = true;
+      state.youtube.editMode = false;
+      state.youtube.editDraft = '';
       if (window.innerWidth <= 900) {
         state.youtube.mobilePane = 'detail';
       }
@@ -420,6 +507,8 @@ createApp({
     const closeYoutubeDetail = () => {
       state.youtube.detailOpen = false;
       state.youtube.mobilePane = 'list';
+      state.youtube.editMode = false;
+      state.youtube.editDraft = '';
     };
 
     const loadCrypto = async () => safeRun(async () => {
@@ -518,6 +607,21 @@ createApp({
       setStatus(`Backup created: ${data.backup}`);
     });
 
+    const clearDatabase = async () => {
+      const confirmed = window.confirm('This will back up the database and then clear all rows. Continue?');
+      if (!confirmed) return;
+      await safeRun(async () => {
+        const { data } = await api.clearDatabase('data/backup');
+        state.x.posts = [];
+        state.youtube.items = [];
+        state.crypto.items = [];
+        state.charts.items = [];
+        state.topic.topics = [];
+        state.topic.entities = [];
+        setStatus(`Database cleared after backup: ${data.backup}`);
+      });
+    };
+
     const loadCurrentView = async () => {
       if (state.view === 'x') await loadX();
       if (state.view === 'youtube') await loadYoutube();
@@ -592,6 +696,7 @@ createApp({
       displayYoutubeTitle,
       displayYoutubeAuthor,
       displayYoutubeTime,
+      isNotionSynced,
       formatDateTime,
       resolveMediaUrl,
       switchView,
@@ -611,6 +716,10 @@ createApp({
       closeXDetail,
       importYoutube,
       analyzeYoutube,
+      openYoutubeEditor,
+      cancelYoutubeEditor,
+      saveYoutubeTranscript,
+      syncYoutubeToNotion,
       selectYoutubeItem,
       showYoutubeList,
       showYoutubeDetail,
@@ -622,6 +731,7 @@ createApp({
       createTopic,
       analyzeTopic,
       backup,
+      clearDatabase,
       login,
       logout,
     };
@@ -649,12 +759,13 @@ createApp({
       <aside class="side">
         <div class="logo">Knowledge Base</div>
         <button class="nav" :class="{active: state.view === 'x'}" @click="switchView('x')">X Library</button>
-        <button class="nav" :class="{active: state.view === 'youtube'}" @click="switchView('youtube')">YouTube Library</button>
-        <button class="nav" :class="{active: state.view === 'crypto'}" @click="switchView('crypto')">Crypto Metrics</button>
+        <button class="nav" :class="{active: state.view === 'youtube'}" @click="switchView('youtube')">YTube Library</button>
+        <button class="nav" :class="{active: state.view === 'crypto'}" @click="switchView('crypto')">CT Metrics</button>
         <button class="nav" :class="{active: state.view === 'charts'}" @click="switchView('charts')">Chart Snapshots</button>
         <button class="nav" :class="{active: state.view === 'topic'}" @click="switchView('topic')">Topic Intelligence</button>
         <div class="side-bottom">
           <button class="action full" @click="backup">Backup</button>
+          <button class="action full danger" @click="clearDatabase">Clear DB</button>
           <button class="action full" @click="logout">Logout</button>
         </div>
       </aside>
@@ -662,8 +773,8 @@ createApp({
       <main class="main">
         <header class="header">
           <h1 v-if="state.view === 'x'">X Library</h1>
-          <h1 v-else-if="state.view === 'youtube'">YouTube Library</h1>
-          <h1 v-else-if="state.view === 'crypto'">Crypto Metrics</h1>
+          <h1 v-else-if="state.view === 'youtube'">YTube Library</h1>
+          <h1 v-else-if="state.view === 'crypto'">CT Metrics</h1>
           <h1 v-else-if="state.view === 'charts'">Analysis & Snapshots</h1>
           <h1 v-else>Topic Intelligence</h1>
           <span class="status" :class="{loading: state.loading}">{{ state.loading ? 'Loading...' : state.status }}</span>
@@ -784,9 +895,12 @@ createApp({
               </div>
 
               <div class="actions-row">
+                <span v-if="isNotionSynced(xActive)" class="badge">Notion Synced</span>
                 <button class="action" @click="closeXDetail">Close Detail</button>
                 <button class="action danger" @click="xDelete">Delete</button>
-                <button class="action primary" @click="xPushTg">Push TG</button>
+                <button class="action" :disabled="isNotionSynced(xActive) || (!xActive.id && !xActive.url)" @click="xPushTg">
+                  {{ isNotionSynced(xActive) ? 'Synced To Notion' : 'Sync To Notion' }}
+                </button>
               </div>
             </div>
 
@@ -852,6 +966,7 @@ createApp({
               <div class="badge-row">
                 <span class="badge">{{ youtubeActive.analysis_status || 'pending' }}</span>
                 <span class="badge">{{ displayYoutubeTime(youtubeActive) || 'Unknown time' }}</span>
+                <span v-if="isNotionSynced(youtubeActive)" class="badge">Notion Synced</span>
               </div>
 
               <div class="body-card">
@@ -861,11 +976,23 @@ createApp({
 
               <div class="body-card">
                 <div class="section-label">Transcript</div>
-                <p class="body-copy subtitle-copy">{{ youtubeActive.content_raw || youtubeActive.content_cleaned || youtubeActive.analysis_result || 'No transcript content yet.' }}</p>
+                <textarea
+                  v-if="state.youtube.editMode"
+                  v-model="state.youtube.editDraft"
+                  class="editor-area"
+                  placeholder="Paste the corrected transcript here"
+                ></textarea>
+                <p v-else class="body-copy subtitle-copy">{{ youtubeActive.content_raw || youtubeActive.content_cleaned || youtubeActive.analysis_result || 'No transcript content yet.' }}</p>
               </div>
 
               <div class="actions-row">
                 <button class="action" @click="closeYoutubeDetail">Close Detail</button>
+                <button v-if="!state.youtube.editMode" class="action" @click="openYoutubeEditor">Edit Transcript</button>
+                <button v-if="state.youtube.editMode" class="action primary" @click="saveYoutubeTranscript">Save Transcript</button>
+                <button v-if="state.youtube.editMode" class="action" @click="cancelYoutubeEditor">Cancel Edit</button>
+                <button class="action" :disabled="isNotionSynced(youtubeActive)" @click="syncYoutubeToNotion">
+                  {{ isNotionSynced(youtubeActive) ? 'Synced To Notion' : 'Sync This To Notion' }}
+                </button>
                 <button v-if="youtubeActive.analysis_status !== 'done'" class="action primary" @click="analyzeYoutube(youtubeActive)">Analyze</button>
               </div>
             </div>

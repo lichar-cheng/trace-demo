@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -44,6 +45,10 @@ APP_PASSWORD = os.getenv("APP_LOGIN_PASSWORD", "trace-demo")
 APP_SECRET_KEY = os.getenv("APP_SECRET_KEY", "trace-demo-fixed-secret")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+NOTION_API_TOKEN = os.getenv("NOTION_API_TOKEN", "")
+NOTION_DATA_SOURCE_ID = os.getenv("NOTION_DATA_SOURCE_ID", "")
+NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID", "")
+NOTION_VERSION = os.getenv("NOTION_VERSION", "2025-09-03")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -78,6 +83,11 @@ def log_youtube(event: str, **kwargs):
 def log_collect(event: str, **kwargs):
     detail = " ".join(f"{key}={repr(value)}" for key, value in kwargs.items())
     print(f"[collect] {event} {detail}".strip(), flush=True)
+
+
+def log_notion(event: str, **kwargs):
+    detail = " ".join(f"{key}={repr(value)}" for key, value in kwargs.items())
+    print(f"[notion] {event} {detail}".strip(), flush=True)
 
 
 def normalize_handle(value: str) -> str:
@@ -131,6 +141,28 @@ def title_from_media_path(path: str) -> str:
     stem = re.sub(r"[_-]([A-Za-z0-9_-]{11})$", "", stem)
     stem = re.sub(r"[_-]+", " ", stem).strip()
     return stem or filename or ""
+
+
+def display_youtube_title(item) -> str:
+    extra = parse_extra(item.extra_json)
+    for candidate in [extra.get("video_title"), item.title]:
+        value = (candidate or "").strip()
+        if not value:
+            continue
+        if re.fullmatch(r"manual[_ ]item[_ ]\d+", value, re.IGNORECASE):
+            continue
+        if re.fullmatch(r"YouTube Video [A-Za-z0-9_-]{6,}", value, re.IGNORECASE):
+            continue
+        if re.match(r"^YouTube:\s*https?://", value, re.IGNORECASE):
+            continue
+        return value
+
+    txt_path = extra.get("txt_path")
+    if txt_path:
+        derived = title_from_media_path(txt_path)
+        if derived and not re.fullmatch(r"manual[_ ]item[_ ]\d+", derived, re.IGNORECASE):
+            return derived
+    return item.url or f"YouTube {item.id}"
 
 
 def safe_relative_path(value: str) -> str:
@@ -252,6 +284,308 @@ def auth_failed_response():
     return response
 
 
+def notion_headers():
+    return {
+        "Authorization": f"Bearer {NOTION_API_TOKEN}",
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+    }
+
+
+def notion_request(method: str, path: str, payload=None):
+    if not NOTION_API_TOKEN or not (NOTION_DATA_SOURCE_ID or NOTION_DATABASE_ID):
+        raise RuntimeError("notion_not_configured")
+    log_notion("request", method=method.upper(), path=path)
+    response = requests.request(
+        method.upper(),
+        f"https://api.notion.com{path}",
+        headers=notion_headers(),
+        json=payload,
+        timeout=30,
+    )
+    if response.status_code >= 400:
+        log_notion("response_failed", method=method.upper(), path=path, status_code=response.status_code, body=response.text[:300])
+        raise RuntimeError(f"notion_http_{response.status_code}: {response.text[:300]}")
+    log_notion("response_ok", method=method.upper(), path=path, status_code=response.status_code)
+    if not response.text:
+        return {}
+    return response.json()
+
+
+def find_notion_property_name(properties: dict, property_type: str, preferred_names=None):
+    preferred_names = preferred_names or []
+    for name in preferred_names:
+        prop = properties.get(name) or {}
+        if prop.get("type") == property_type:
+            return name
+    for name, prop in properties.items():
+        if prop.get("type") == property_type:
+            return name
+    return None
+
+
+def notion_schema_path():
+    if NOTION_DATA_SOURCE_ID:
+        return f"/v1/data_sources/{NOTION_DATA_SOURCE_ID}"
+    return f"/v1/databases/{NOTION_DATABASE_ID}"
+
+
+def notion_parent_payload():
+    if NOTION_DATA_SOURCE_ID:
+        return {"data_source_id": NOTION_DATA_SOURCE_ID}
+    return {"database_id": NOTION_DATABASE_ID}
+
+
+def resolve_notion_schema():
+    if NOTION_DATA_SOURCE_ID:
+        log_notion("schema_resolve", mode="data_source_id", data_source_id=NOTION_DATA_SOURCE_ID)
+        data_source = notion_request("GET", f"/v1/data_sources/{NOTION_DATA_SOURCE_ID}")
+        return data_source, {"data_source_id": NOTION_DATA_SOURCE_ID}
+
+    if NOTION_DATABASE_ID:
+        log_notion("schema_resolve", mode="database_id", database_id=NOTION_DATABASE_ID)
+        database_obj = notion_request("GET", f"/v1/databases/{NOTION_DATABASE_ID}")
+        data_sources = database_obj.get("data_sources") or []
+        if not data_sources:
+            raise RuntimeError("notion_database_has_no_data_sources")
+        first_source = data_sources[0] or {}
+        resolved_data_source_id = first_source.get("id")
+        if not resolved_data_source_id:
+            raise RuntimeError("notion_database_missing_data_source_id")
+        log_notion("schema_resolved_from_database", database_id=NOTION_DATABASE_ID, data_source_id=resolved_data_source_id)
+        data_source = notion_request("GET", f"/v1/data_sources/{resolved_data_source_id}")
+        return data_source, {"data_source_id": resolved_data_source_id}
+
+    raise RuntimeError("notion_not_configured")
+
+
+def notion_title_value(text: str):
+    return {"title": [{"type": "text", "text": {"content": (text or "Untitled")[:200]}}]}
+
+
+def notion_rich_text_value(text: str):
+    return {"rich_text": [{"type": "text", "text": {"content": (text or "")[:1900]}}]}
+
+
+def notion_summary_text(text: str, limit: int = 280):
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def notion_date_value(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return {"date": {"start": value.isoformat()}}
+    return {"date": {"start": str(value)}}
+
+
+def notion_url_value(value: str):
+    if not value:
+        return None
+    return {"url": value}
+
+
+def notion_status_name(status_value: str, options: list):
+    mapping = {
+        "pending": ["未开始", "Not started", "Todo", "To do", "Backlog"],
+        "processing": ["进行中", "In progress", "Doing"],
+        "done": ["已完成", "完成", "Done"],
+        "failed": ["失败", "阻塞", "Blocked"],
+    }
+    expected = mapping.get(status_value, []) + [status_value]
+    option_names = {option.get("name") for option in options or []}
+    for candidate in expected:
+        if candidate in option_names:
+            return candidate
+    return next(iter(option_names), None)
+
+
+def chunk_text(text: str, limit: int = 1800):
+    text = (text or "").strip()
+    if not text:
+        return []
+    chunks = []
+    current = []
+    current_len = 0
+    for line in text.splitlines():
+        line = line.rstrip()
+        additional = len(line) + (1 if current else 0)
+        if current and current_len + additional > limit:
+            chunks.append("\n".join(current).strip())
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += additional
+    if current:
+        chunks.append("\n".join(current).strip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def build_notion_transcript_blocks(item):
+    transcript = (item.content_raw or item.content_cleaned or "").strip()
+    if not transcript:
+        return []
+    blocks = [
+        {
+            "object": "block",
+            "type": "heading_2",
+            "heading_2": {
+                "rich_text": [{"type": "text", "text": {"content": "Transcript"}}]
+            },
+        }
+    ]
+    for chunk in chunk_text(transcript):
+        blocks.append(
+            {
+                "object": "block",
+                "type": "paragraph",
+                "paragraph": {
+                    "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                },
+            }
+        )
+    return blocks
+
+
+def replace_notion_page_body(page_id: str, item, extra_payload: dict):
+    old_block_ids = extra_payload.get("notion_transcript_block_ids") or []
+    for block_id in old_block_ids:
+        try:
+            notion_request("DELETE", f"/v1/blocks/{block_id}")
+            log_notion("body_block_deleted", page_id=page_id, block_id=block_id)
+        except Exception as exc:
+            log_notion("body_block_delete_failed", page_id=page_id, block_id=block_id, error=str(exc))
+
+    blocks = build_notion_transcript_blocks(item)
+    if not blocks:
+        extra_payload["notion_transcript_block_ids"] = []
+        return extra_payload
+
+    response = notion_request(
+        "PATCH",
+        f"/v1/blocks/{page_id}/children",
+        {"children": blocks},
+    )
+    block_ids = [block.get("id") for block in response.get("results", []) if block.get("id")]
+    extra_payload["notion_transcript_block_ids"] = block_ids
+    log_notion("body_blocks_replaced", page_id=page_id, block_count=len(block_ids))
+    return extra_payload
+
+
+def replace_notion_x_page_body(page_id: str, post_data: dict, extra_payload: dict):
+    old_block_ids = extra_payload.get("notion_body_block_ids") or []
+    for block_id in old_block_ids:
+        try:
+            notion_request("DELETE", f"/v1/blocks/{block_id}")
+            log_notion("body_block_deleted", page_id=page_id, block_id=block_id)
+        except Exception as exc:
+            log_notion("body_block_delete_failed", page_id=page_id, block_id=block_id, error=str(exc))
+
+    blocks = []
+    body = (post_data.get("text") or "").strip()
+    if body:
+        for chunk in chunk_text(body):
+            blocks.append(
+                {
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{"type": "text", "text": {"content": chunk}}]
+                    },
+                }
+            )
+
+    for image_url in post_data.get("image_urls") or []:
+        absolute_url = image_url if str(image_url).startswith("http") else f"http://localhost:8000{image_url}"
+        blocks.append(
+            {
+                "object": "block",
+                "type": "image",
+                "image": {
+                    "type": "external",
+                    "external": {"url": absolute_url},
+                },
+            }
+        )
+
+    if not blocks:
+        extra_payload["notion_body_block_ids"] = []
+        return extra_payload
+
+    response = notion_request("PATCH", f"/v1/blocks/{page_id}/children", {"children": blocks})
+    block_ids = [block.get("id") for block in response.get("results", []) if block.get("id")]
+    extra_payload["notion_body_block_ids"] = block_ids
+    log_notion("body_blocks_replaced", page_id=page_id, block_count=len(block_ids))
+    return extra_payload
+
+
+def build_notion_youtube_properties(item, data_source_properties: dict):
+    extra = parse_extra(item.extra_json)
+    transcript = (item.content_raw or item.content_cleaned or "").strip()
+    note_lines = [
+        f"Author: {item.author_name or extra.get('uploader') or ''}".strip(),
+        f"Time: {item.publish_time.isoformat() if item.publish_time else extra.get('publish_time') or extra.get('upload_date') or ''}".strip(),
+        notion_summary_text(transcript, 240).strip(),
+    ]
+    note_text = "\n".join(line for line in note_lines if line).strip()
+
+    properties = {}
+    title_name = find_notion_property_name(data_source_properties, "title", ["名称", "Name", "标题"])
+    note_name = find_notion_property_name(data_source_properties, "rich_text", ["备注", "Note", "Notes"])
+    date_name = find_notion_property_name(data_source_properties, "date", ["日期", "Date"])
+    status_name = find_notion_property_name(data_source_properties, "status", ["状态", "Status"])
+    url_name = find_notion_property_name(data_source_properties, "url", ["网址", "Website", "URL", "Link"])
+
+    notion_title = display_youtube_title(item)
+    if title_name:
+        properties[title_name] = notion_title_value(notion_title or item.url or f"YouTube {item.id}")
+    if note_name and note_text:
+        properties[note_name] = notion_rich_text_value(note_text)
+    if date_name:
+        date_value = notion_date_value(item.publish_time or extra.get("publish_time") or extra.get("upload_date"))
+        if date_value:
+            properties[date_name] = date_value
+    if status_name:
+        option_name = notion_status_name(item.analysis_status or "pending", data_source_properties.get(status_name, {}).get("status", {}).get("options", []))
+        if option_name:
+            properties[status_name] = {"status": {"name": option_name}}
+    if url_name and item.url:
+        properties[url_name] = notion_url_value(item.url)
+    return properties
+
+
+def build_notion_x_properties(post_data: dict, data_source_properties: dict):
+    body = (post_data.get("text") or "").strip()
+    note_text = notion_summary_text(body, 240)
+    properties = {}
+    title_name = find_notion_property_name(data_source_properties, "title", ["名称", "Name", "标题"])
+    note_name = find_notion_property_name(data_source_properties, "rich_text", ["备注", "Note", "Notes"])
+    date_name = find_notion_property_name(data_source_properties, "date", ["日期", "Date"])
+    status_name = find_notion_property_name(data_source_properties, "status", ["状态", "Status"])
+    url_name = find_notion_property_name(data_source_properties, "url", ["网址", "Website", "URL", "Link"])
+
+    notion_title = (post_data.get("kol_name") or post_data.get("kol_handle") or "X Post").strip()
+    if title_name:
+        properties[title_name] = notion_title_value(notion_title)
+    if note_name and note_text:
+        properties[note_name] = notion_rich_text_value(note_text)
+    if date_name:
+        date_value = notion_date_value(post_data.get("posted_at") or post_data.get("created_at"))
+        if date_value:
+            properties[date_name] = date_value
+    if status_name:
+        option_name = notion_status_name("done", data_source_properties.get(status_name, {}).get("status", {}).get("options", []))
+        if option_name:
+            properties[status_name] = {"status": {"name": option_name}}
+    if url_name and post_data.get("url"):
+        properties[url_name] = notion_url_value(post_data.get("url"))
+    return properties
+
+
 def generate_tags(text: str) -> str:
     if not text:
         return ""
@@ -273,6 +607,43 @@ def read_json_file(filepath):
             return json.loads(content) if content else []
     except Exception:
         return []
+
+
+def find_x_source_record(url: str):
+    if not url:
+        return None
+    source_paths = list(Path(DATA_ROOT_DIR).glob(COLLECT_FILE_PATTERN))
+    source_paths.extend(Path(UPLOAD_DIR).glob("*.json"))
+    for file_path in source_paths:
+        rows = read_json_file(str(file_path))
+        if isinstance(rows, dict):
+            rows = rows.get("items", [])
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if isinstance(row, dict) and (row.get("url") or "") == url:
+                return row
+    return None
+
+
+def hydrate_x_post_content(url: str, fallback_text: str, fallback_images=None):
+    row = find_x_source_record(url)
+    if not row:
+        return fallback_text, list(fallback_images or [])
+    text = row.get("text") or row.get("full_text") or row.get("content_raw") or fallback_text
+    image_values = row.get("image_urls") or row.get("media_urls") or row.get("local_media_paths") or row.get("media_paths") or []
+    images = [resolved for resolved in (resolve_image_reference(v) for v in split_possible_list(image_values)) if resolved]
+    return text or fallback_text, images or list(fallback_images or [])
+
+
+def read_text_file(path: str) -> str:
+    if not path or not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
 
 
 def get_today_filename():
@@ -395,13 +766,21 @@ def parse_extra(value):
 def serialize_knowledge(item):
     local_media_paths = split_csv(item.local_media_paths)
     remote_media_paths = split_csv(item.media_paths)
+    extra = parse_extra(item.extra_json)
+    content_raw = item.content_raw
+    content_cleaned = item.content_cleaned
+    if item.source_type == "youtube" and not (content_raw or content_cleaned):
+        transcript = read_text_file(extra.get("txt_path"))
+        if transcript:
+            content_raw = transcript
+            content_cleaned = transcript
     return {
         "id": item.id,
         "source_type": item.source_type,
         "source_subtype": item.source_subtype,
         "title": item.title,
-        "content_raw": item.content_raw,
-        "content_cleaned": item.content_cleaned,
+        "content_raw": content_raw,
+        "content_cleaned": content_cleaned,
         "author_name": item.author_name,
         "publish_time": item.publish_time.isoformat() if item.publish_time else None,
         "url": item.url,
@@ -412,7 +791,8 @@ def serialize_knowledge(item):
         "analysis_status": item.analysis_status,
         "analysis_result": item.analysis_result,
         "push_status": item.push_status,
-        "extra": parse_extra(item.extra_json),
+        "notion_synced_at": extra.get("notion_synced_at"),
+        "extra": extra,
     }
 
 
@@ -462,7 +842,7 @@ def create_posts():
                 kol_name=item.kol_name,
                 kol_avatar_url=item.kol_avatar_url,
                 posted_at=item.posted_at,
-                text=item.text,
+                text="",
                 image_urls=",".join(item.image_urls),
                 local_image_paths="",
                 likes=item.likes or 0,
@@ -476,8 +856,8 @@ def create_posts():
                     source_type="x",
                     source_subtype="tweet",
                     title=f"@{item.kol_handle}",
-                    content_raw=item.text,
-                    content_cleaned=item.text,
+                    content_raw="",
+                    content_cleaned="",
                     author_name=item.kol_name or item.kol_handle,
                     publish_time=item.posted_at,
                     url=item.url,
@@ -504,17 +884,29 @@ def list_posts():
         if kol_handle:
             q = q.filter(KolPost.kol_handle == kol_handle)
         items = q.order_by(KolPost.id.desc()).limit(limit).all()
+        urls = [item.url for item in items if item.url]
+        knowledge_by_url = {}
+        if urls:
+            knowledge_items = db.query(KnowledgeItem).filter(
+                KnowledgeItem.source_type == "x",
+                KnowledgeItem.url.in_(urls),
+            ).all()
+            knowledge_by_url = {item.url: item for item in knowledge_items if item.url}
 
-    return ok([
-        {
+    result = []
+    for i in items:
+        fallback_images = build_image_urls(split_csv(i.local_image_paths), split_csv(i.image_urls))
+        hydrated_text, hydrated_images = hydrate_x_post_content(i.url, i.text, fallback_images)
+        extra = parse_extra((knowledge_by_url.get(i.url).extra_json if knowledge_by_url.get(i.url) else ""))
+        result.append({
             "id": i.id,
             "kol_handle": i.kol_handle,
             "kol_name": i.kol_name,
             "kol_avatar_url": i.kol_avatar_url,
             "posted_at": i.posted_at.isoformat() if i.posted_at else None,
-            "text": i.text,
+            "text": hydrated_text,
             "translated_text": None,
-            "image_urls": build_image_urls(split_csv(i.local_image_paths), split_csv(i.image_urls)),
+            "image_urls": hydrated_images,
             "local_image_paths": split_csv(i.local_image_paths),
             "remote_image_urls": split_csv(i.image_urls),
             "likes": i.likes,
@@ -522,9 +914,10 @@ def list_posts():
             "replies": i.replies,
             "url": i.url,
             "created_at": i.created_at.isoformat() if i.created_at else None,
-        }
-        for i in items
-    ])
+            "notion_synced_at": extra.get("notion_synced_at"),
+            "notion_page_id": extra.get("notion_page_id"),
+        })
+    return ok(result)
 
 
 @api.post("/browse-log")
@@ -917,8 +1310,8 @@ def youtube_analyze():
                 )
 
             if row.get("downloaded") and transcribe.get("ok"):
-                item.content_raw = transcript
-                item.content_cleaned = transcript
+                item.content_raw = ""
+                item.content_cleaned = ""
                 item.analysis_status = "done"
                 derived_title = title_from_media_path(txt_path or row.get("audio_path") or "")
                 if derived_title:
@@ -976,6 +1369,260 @@ def youtube_analyze():
 
     log_youtube("analyze_finished", analyzed=analyzed)
     return ok({"analyzed": analyzed, "results": results})
+
+
+@api.post("/youtube/<int:item_id>/transcript")
+def youtube_save_transcript(item_id):
+    payload = request.get_json(silent=True) or {}
+    content = (payload.get("content") or "").strip()
+    if not content:
+        return ok({"error": "content_required"}, 400)
+
+    with db_session() as db:
+        item = db.query(KnowledgeItem).filter(
+            KnowledgeItem.id == item_id,
+            KnowledgeItem.source_type == "youtube",
+        ).first()
+        if not item:
+            return ok({"error": "youtube_item_not_found"}, 404)
+
+        extra_payload = parse_extra(item.extra_json)
+        txt_path = extra_payload.get("txt_path")
+        if not txt_path:
+            txt_dir = Path(os.getenv("YOUTUBE_TRANSCRIBE_DIR", "./data/youtube/transcribe_output"))
+            txt_dir.mkdir(parents=True, exist_ok=True)
+            txt_path = str(txt_dir / f"manual_item_{item_id}.txt")
+
+        Path(txt_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        item.content_raw = content
+        item.content_raw = ""
+        item.content_cleaned = ""
+        item.analysis_status = "done"
+        item.analysis_result = f"Transcript stored from {txt_path}."
+        extra_payload["txt_path"] = txt_path
+        extra_payload["manual_edit_at"] = datetime.utcnow().isoformat()
+        extra_payload.pop("notion_synced_at", None)
+        item.extra_json = json.dumps(extra_payload, ensure_ascii=False)
+
+    log_youtube("transcript_saved", item_id=item_id, txt_path=txt_path, length=len(content))
+    return ok({"saved": True, "txt_path": txt_path, "item_id": item_id})
+
+
+def sync_youtube_items_to_notion(item_ids):
+    log_notion("sync_start", item_ids=item_ids, data_source_id=NOTION_DATA_SOURCE_ID, database_id=NOTION_DATABASE_ID)
+    try:
+        data_source, notion_parent = resolve_notion_schema()
+    except Exception as exc:
+        log_notion("sync_schema_failed", error=str(exc))
+        return {"error": "notion_sync_failed", "detail": str(exc)}, 400
+    properties_schema = data_source.get("properties", {})
+    log_notion("sync_schema_loaded", property_names=list(properties_schema.keys()))
+
+    created = 0
+    updated = 0
+    failed = 0
+    results = []
+
+    with db_session() as db:
+        items = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "youtube",
+            KnowledgeItem.id.in_(item_ids),
+        ).all()
+
+        for item in items:
+            extra_payload = parse_extra(item.extra_json)
+            properties = build_notion_youtube_properties(item, properties_schema)
+            if not properties:
+                log_notion("sync_item_failed", item_id=item.id, reason="no_matching_notion_properties")
+                failed += 1
+                results.append({"item_id": item.id, "status": "failed", "reason": "no_matching_notion_properties"})
+                continue
+
+            notion_page_id = extra_payload.get("notion_page_id")
+            try:
+                if notion_page_id:
+                    try:
+                        response = notion_request("PATCH", f"/v1/pages/{notion_page_id}", {"properties": properties})
+                        sync_status = "updated"
+                    except Exception as exc:
+                        if "archived" not in str(exc).lower():
+                            raise
+                        log_notion("sync_item_retry_create", item_id=item.id, old_page_id=notion_page_id, reason=str(exc))
+                        response = notion_request(
+                            "POST",
+                            "/v1/pages",
+                            {"parent": notion_parent, "properties": properties},
+                        )
+                        notion_page_id = response.get("id")
+                        extra_payload["notion_page_id"] = notion_page_id
+                        sync_status = "recreated"
+                        created += 1
+                    else:
+                        updated += 1
+                else:
+                    response = notion_request(
+                        "POST",
+                        "/v1/pages",
+                        {"parent": notion_parent, "properties": properties},
+                    )
+                    notion_page_id = response.get("id")
+                    extra_payload["notion_page_id"] = notion_page_id
+                    created += 1
+                    sync_status = "created"
+
+                extra_payload["notion_url"] = response.get("url")
+                extra_payload["notion_synced_at"] = datetime.utcnow().isoformat()
+                if notion_page_id:
+                    try:
+                        extra_payload = replace_notion_page_body(notion_page_id, item, extra_payload)
+                    except Exception as exc:
+                        if "archived" not in str(exc).lower():
+                            raise
+                        log_notion("sync_body_retry_create", item_id=item.id, old_page_id=notion_page_id, reason=str(exc))
+                        response = notion_request(
+                            "POST",
+                            "/v1/pages",
+                            {"parent": notion_parent, "properties": properties},
+                        )
+                        notion_page_id = response.get("id")
+                        extra_payload["notion_page_id"] = notion_page_id
+                        extra_payload["notion_url"] = response.get("url")
+                        extra_payload = replace_notion_page_body(notion_page_id, item, extra_payload)
+                        sync_status = "recreated"
+                        created += 1
+                item.extra_json = json.dumps(extra_payload, ensure_ascii=False)
+                log_notion("sync_item_ok", item_id=item.id, status=sync_status, page_id=notion_page_id)
+                results.append({"item_id": item.id, "status": sync_status, "page_id": notion_page_id})
+            except Exception as exc:
+                log_notion("sync_item_failed", item_id=item.id, reason=str(exc))
+                failed += 1
+                results.append({"item_id": item.id, "status": "failed", "reason": str(exc)})
+
+    log_notion("sync_finished", created=created, updated=updated, failed=failed)
+    return {"created": created, "updated": updated, "failed": failed, "results": results}, 200
+
+
+def sync_x_post_to_notion(post_id: int = None, url: str = ""):
+    log_notion("x_sync_start", post_id=post_id, url=url)
+    try:
+        data_source, notion_parent = resolve_notion_schema()
+    except Exception as exc:
+        log_notion("x_sync_schema_failed", post_id=post_id, url=url, error=str(exc))
+        return {"error": "notion_sync_failed", "detail": str(exc)}, 400
+    properties_schema = data_source.get("properties", {})
+    log_notion("x_sync_schema_loaded", property_names=list(properties_schema.keys()))
+
+    with db_session() as db:
+        post = None
+        if post_id:
+            post = db.query(KolPost).filter(KolPost.id == post_id).first()
+        if not post and url:
+            post = db.query(KolPost).filter(KolPost.url == url).first()
+        if not post:
+            return {"error": "post_not_found"}, 404
+        item = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "x",
+            KnowledgeItem.url == post.url,
+        ).first()
+        if not item:
+            return {"error": "knowledge_item_not_found"}, 404
+
+        fallback_images = build_image_urls(split_csv(post.local_image_paths), split_csv(post.image_urls))
+        hydrated_text, hydrated_images = hydrate_x_post_content(post.url, post.text or "", fallback_images)
+        post_data = {
+            "id": post.id,
+            "kol_handle": post.kol_handle,
+            "kol_name": post.kol_name,
+            "posted_at": post.posted_at.isoformat() if post.posted_at else None,
+            "text": hydrated_text,
+            "image_urls": hydrated_images,
+            "url": post.url,
+            "created_at": post.created_at.isoformat() if post.created_at else None,
+        }
+        extra_payload = parse_extra(item.extra_json)
+        properties = build_notion_x_properties(post_data, properties_schema)
+        if not properties:
+            log_notion("x_sync_failed", post_id=post.id, url=post.url, reason="no_matching_notion_properties")
+            return {"error": "notion_sync_failed", "detail": "no_matching_notion_properties"}, 400
+
+        notion_page_id = extra_payload.get("notion_page_id")
+        try:
+            if notion_page_id:
+                try:
+                    response = notion_request("PATCH", f"/v1/pages/{notion_page_id}", {"properties": properties})
+                    sync_status = "updated"
+                except Exception as exc:
+                    if "archived" not in str(exc).lower():
+                        raise
+                    log_notion("x_sync_retry_create", post_id=post.id, old_page_id=notion_page_id, reason=str(exc))
+                    response = notion_request("POST", "/v1/pages", {"parent": notion_parent, "properties": properties})
+                    notion_page_id = response.get("id")
+                    extra_payload["notion_page_id"] = notion_page_id
+                    sync_status = "recreated"
+            else:
+                response = notion_request("POST", "/v1/pages", {"parent": notion_parent, "properties": properties})
+                notion_page_id = response.get("id")
+                extra_payload["notion_page_id"] = notion_page_id
+                sync_status = "created"
+
+            extra_payload["notion_url"] = response.get("url")
+            extra_payload["notion_synced_at"] = datetime.utcnow().isoformat()
+            if notion_page_id:
+                extra_payload = replace_notion_x_page_body(notion_page_id, post_data, extra_payload)
+            item.extra_json = json.dumps(extra_payload, ensure_ascii=False)
+            log_notion("x_sync_ok", post_id=post.id, status=sync_status, page_id=notion_page_id)
+            return {
+                "created": 1 if sync_status in {"created", "recreated"} else 0,
+                "updated": 1 if sync_status == "updated" else 0,
+                "failed": 0,
+                "results": [{"post_id": post.id, "status": sync_status, "page_id": notion_page_id}],
+            }, 200
+        except Exception as exc:
+            log_notion("x_sync_failed", post_id=post.id, url=post.url, reason=str(exc))
+            return {
+                "created": 0,
+                "updated": 0,
+                "failed": 1,
+                "results": [{"post_id": post.id, "status": "failed", "reason": str(exc)}],
+            }, 200
+
+
+@api.post("/youtube/notion/sync")
+def youtube_sync_notion():
+    payload = request.get_json(silent=True) or {}
+    item_ids = [int(item_id) for item_id in payload.get("item_ids", []) if str(item_id).strip()]
+
+    if not item_ids:
+        return ok({"error": "item_ids_required"}, 400)
+
+    data, status = sync_youtube_items_to_notion(item_ids)
+    return ok(data, status)
+
+
+@api.post("/youtube/<int:item_id>/notion-sync")
+def youtube_sync_single_notion(item_id):
+    data, status = sync_youtube_items_to_notion([item_id])
+    return ok(data, status)
+
+
+@api.post("/x/notion-sync")
+def x_sync_single_notion():
+    payload = request.get_json(silent=True) or {}
+    raw_post_id = payload.get("post_id")
+    post_id = None
+    if raw_post_id not in (None, "", "null"):
+        try:
+            post_id = int(raw_post_id)
+        except (TypeError, ValueError):
+            return ok({"error": "post_id_invalid"}, 400)
+    url = (payload.get("url") or "").strip()
+    if not post_id and not url:
+        return ok({"error": "post_id_or_url_required"}, 400)
+    data, status = sync_x_post_to_notion(post_id=post_id, url=url)
+    return ok(data, status)
 
 
 @api.get("/x/source/files")
@@ -1185,6 +1832,53 @@ def run_backup():
     return ok({"backup": str(dst), "exists": dst.exists()})
 
 
+@api.post("/database/clear")
+def clear_database():
+    payload, err = parse_payload(BackupPayload)
+    if err:
+        return err
+
+    target = Path(payload.target_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    src = Path(BASE_DIR) / "data.db"
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    dst = target / f"data_before_clear_{stamp}.db"
+    if src.exists():
+        dst.write_bytes(src.read_bytes())
+
+    with db_session() as db:
+        deleted = {
+            "kol_posts": db.query(KolPost).delete(),
+            "browse_logs": db.query(BrowseLog).delete(),
+            "knowledge_items": db.query(KnowledgeItem).delete(),
+            "topics": db.query(Topic).delete(),
+            "entity_profiles": db.query(EntityProfile).delete(),
+        }
+
+    db_path = Path(BASE_DIR) / "data.db"
+    size_before_vacuum = db_path.stat().st_size if db_path.exists() else 0
+    vacuum_ok = False
+    vacuum_error = None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("VACUUM")
+        conn.close()
+        vacuum_ok = True
+    except Exception as exc:
+        vacuum_error = str(exc)
+    size_after_vacuum = db_path.stat().st_size if db_path.exists() else 0
+
+    return ok({
+        "backup": str(dst),
+        "exists": dst.exists(),
+        "deleted": deleted,
+        "vacuum_ok": vacuum_ok,
+        "vacuum_error": vacuum_error,
+        "db_size_before_vacuum": size_before_vacuum,
+        "db_size_after_vacuum": size_after_vacuum,
+    })
+
+
 def inject_script(html: str) -> str:
     script = """
 <script>
@@ -1292,7 +1986,7 @@ def collect_data():
                     kol_name=name,
                     kol_avatar_url="",
                     posted_at=posted_at,
-                    text=text,
+                    text="",
                     image_urls=",".join(remote_urls),
                     local_image_paths=",".join(local_paths),
                     likes=likes,
@@ -1306,8 +2000,8 @@ def collect_data():
                         source_type="x",
                         source_subtype="tweet",
                         title=f"@{handle}",
-                        content_raw=text,
-                        content_cleaned=text,
+                        content_raw="",
+                        content_cleaned="",
                         author_name=name,
                         publish_time=posted_at,
                         url=post_url,

@@ -16,6 +16,7 @@ export const api = {
   collectX(payload){ return axios.post(`${apiBase}/api/collect`, payload); },
   trashBatch(payload){ return axios.post(`${apiBase}/api/trash/batch`, payload); },
   pushTg(url){ return axios.post(`${apiBase}/api/push/tg`, { url }); },
+  xSyncItemToNotion(payload){ return axios.post(`${apiBase}/api/x/notion-sync`, payload); },
   listXSourceFiles(){ return axios.get(`${apiBase}/api/x/source/files`); },
   uploadXJsonFiles(formData){ return axios.post(`${apiBase}/api/x/source/json-upload`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }); },
   uploadXImageFolder(formData){ return axios.post(`${apiBase}/api/x/source/image-folder-upload`, formData, { headers: { 'Content-Type': 'multipart/form-data' } }); },
@@ -30,6 +31,9 @@ export const api = {
   youtubeList(params){ return axios.get(`${apiBase}/api/youtube/items`, { params }); },
   youtubeTask(task_id){ return axios.get(`${apiBase}/api/youtube/tasks/${task_id}`); },
   youtubeAnalyze(item_ids){ return axios.post(`${apiBase}/api/youtube/analyze`, { item_ids }); },
+  youtubeSaveTranscript(item_id, content){ return axios.post(`${apiBase}/api/youtube/${item_id}/transcript`, { content }); },
+  youtubeSyncToNotion(item_ids){ return axios.post(`${apiBase}/api/youtube/notion/sync`, { item_ids }); },
+  youtubeSyncItemToNotion(item_id){ return axios.post(`${apiBase}/api/youtube/${item_id}/notion-sync`); },
 
   cryptoPull(payload){ return axios.post(`${apiBase}/api/crypto/pull`, payload); },
   cryptoBackfill(payload){ return axios.post(`${apiBase}/api/crypto/backfill`, payload); },
@@ -40,5 +44,6 @@ export const api = {
   chartList(params){ return axios.get(`${apiBase}/api/charts/snapshots`, { params }); },
 
   youtubeDelete(item_ids){ return axios.post(`${apiBase}/api/youtube/delete`, { item_ids }); },
-  runBackup(target_dir){ return axios.post(`${apiBase}/api/backup/run`, { target_dir }); }
+  runBackup(target_dir){ return axios.post(`${apiBase}/api/backup/run`, { target_dir }); },
+  clearDatabase(target_dir){ return axios.post(`${apiBase}/api/database/clear`, { target_dir }); }
 }
