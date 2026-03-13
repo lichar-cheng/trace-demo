@@ -145,7 +145,7 @@ def title_from_media_path(path: str) -> str:
 
 def display_youtube_title(item) -> str:
     extra = parse_extra(item.extra_json)
-    for candidate in [extra.get("video_title"), item.title]:
+    for candidate in [extra.get("display_title"), extra.get("video_title"), item.title]:
         value = (candidate or "").strip()
         if not value:
             continue
@@ -157,11 +157,6 @@ def display_youtube_title(item) -> str:
             continue
         return value
 
-    txt_path = extra.get("txt_path")
-    if txt_path:
-        derived = title_from_media_path(txt_path)
-        if derived and not re.fullmatch(r"manual[_ ]item[_ ]\d+", derived, re.IGNORECASE):
-            return derived
     return item.url or f"YouTube {item.id}"
 
 
@@ -1195,6 +1190,7 @@ def youtube_import():
                     extra_json=json.dumps(
                         {
                             "channel_name": payload.channel_name,
+                            "display_title": video_title,
                             "video_title": video_title,
                             "uploader": uploader,
                             "publish_time": publish_time.isoformat() if publish_time else None,
@@ -1327,11 +1323,14 @@ def youtube_analyze():
                     extra_payload["txt_path"] = txt_path
                 if row.get("audio_path"):
                     extra_payload["audio_path"] = row.get("audio_path")
-                if derived_title:
-                    extra_payload["video_title"] = derived_title
-                elif metadata.get("title"):
-                    item.title = metadata["title"]
+                if metadata.get("title"):
+                    extra_payload["display_title"] = metadata["title"]
                     extra_payload["video_title"] = metadata["title"]
+                    item.title = metadata["title"]
+                else:
+                    extra_payload["display_title"] = extra_payload.get("display_title") or item.title
+                    if derived_title and not extra_payload.get("video_title"):
+                        extra_payload["video_title"] = derived_title
                 if metadata.get("uploader"):
                     item.author_name = metadata["uploader"]
                     extra_payload["uploader"] = metadata["uploader"]
@@ -1403,6 +1402,7 @@ def youtube_save_transcript(item_id):
         item.analysis_status = "done"
         item.analysis_result = f"Transcript stored from {txt_path}."
         extra_payload["txt_path"] = txt_path
+        extra_payload["display_title"] = extra_payload.get("display_title") or item.title
         extra_payload["manual_edit_at"] = datetime.utcnow().isoformat()
         extra_payload.pop("notion_synced_at", None)
         item.extra_json = json.dumps(extra_payload, ensure_ascii=False)

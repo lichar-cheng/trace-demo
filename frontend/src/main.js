@@ -144,26 +144,9 @@ createApp({
 
     const displayYoutubeTitle = (item) => {
       if (!item) return '';
-      const rawTitle = (item.extra?.video_title || item.title || '').trim();
+      const rawTitle = (item.extra?.display_title || item.extra?.video_title || item.title || '').trim();
       if (rawTitle && !/^YouTube:\s*https?:\/\//i.test(rawTitle)) {
         return rawTitle;
-      }
-      const isUsableDerivedTitle = (value) => {
-        const normalized = String(value || '').trim();
-        if (!normalized) return false;
-        if (/^manual item \d+$/i.test(normalized)) return false;
-        if (/^manual_item_\d+$/i.test(normalized)) return false;
-        if (/^youtube video [A-Za-z0-9_-]{6,}$/i.test(normalized)) return false;
-        return true;
-      };
-      const resultPathMatch = String(item.analysis_result || '').match(/Transcript stored from (.+?\.txt)/i);
-      if (resultPathMatch?.[1]) {
-        const derived = prettifyStem(fileNameFromPath(resultPathMatch[1]));
-        if (isUsableDerivedTitle(derived)) return derived;
-      }
-      if (item.extra?.txt_path) {
-        const derived = prettifyStem(fileNameFromPath(item.extra.txt_path));
-        if (isUsableDerivedTitle(derived)) return derived;
       }
       const url = item.url || '';
       try {
