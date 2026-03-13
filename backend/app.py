@@ -8,7 +8,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-
+from dotenv import load_dotenv
 import httpx
 import requests
 from flask import Blueprint, Flask, Response, jsonify, request, send_from_directory, session
@@ -36,6 +36,9 @@ from schemas import (
 )
 
 BASE_DIR = os.path.dirname(__file__)
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
 init_db()
 
@@ -2044,11 +2047,14 @@ def create_app():
             return None
         if request.path in {"/api/auth/login", "/api/auth/status", "/api/auth/logout"}:
             return None
+        #print("header_token =", request.headers.get("X-Collect-Token", "").strip())
+        #print("AUTH_TOKEN =", AUTH_TOKEN)
         if request.path == "/api/collect":
             body = request.get_json(silent=True) or {}
             header_token = request.headers.get("X-Collect-Token", "").strip()
             if body.get("auth") == AUTH_TOKEN or header_token == AUTH_TOKEN:
                 return None
+        
         protected = (
             request.path.startswith("/api/")
             or request.path.startswith("/images/")

@@ -3,9 +3,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-source .venv/bin/activate || {
-  echo "[ERR] .venv not found, run: bash scripts/bootstrap.sh"
+source /home/ubuntu/my_env/bin/activate || {
+  echo "[ERR] myenv not found, run: bash scripts/bootstrap.sh"
   exit 1
 }
-
-python backend/app.py
+nohup python backend/app.py > logs/backend.log 2>&1 &

@@ -4,11 +4,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if [ ! -d .venv ]; then
-  python3 -m venv .venv
-fi
 
-source .venv/bin/activate
+source /home/ubuntu/my_env/bin/activate
 pip install --upgrade pip
 pip install -r backend/requirements.txt
 

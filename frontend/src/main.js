@@ -1,7 +1,7 @@
 const { createApp, reactive, computed, onMounted } = Vue;
 import { api } from './services/api.js';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = 'http://152.32.174.6:8000';
 
 createApp({
   setup() {

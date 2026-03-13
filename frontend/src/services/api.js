@@ -1,5 +1,5 @@
 // Last Edited: 2026-03-12
-const apiBase = 'http://localhost:8000';
+const apiBase = 'http://152.32.174.6:8000';
 
 axios.defaults.withCredentials = true;
 

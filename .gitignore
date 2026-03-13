@@ -2,6 +2,6 @@
 .env.local
 .env.*
 !.env.example
-
+logs/
 data/x/images/
 data/youtube/audio_lake/
