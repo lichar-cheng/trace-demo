@@ -216,6 +216,18 @@ createApp({
       const normalizedImages = Array.isArray(images)
         ? images.filter(Boolean)
         : String(images || '').split(',').map((part) => part.trim()).filter(Boolean);
+      const localImagePaths = Array.isArray(item.local_image_paths || item.local_media_paths)
+        ? (item.local_image_paths || item.local_media_paths).filter(Boolean)
+        : String(item.local_image_paths || item.local_media_paths || '').split(',').map((part) => part.trim()).filter(Boolean);
+      const remoteImageUrls = Array.isArray(item.remote_image_urls || item.media_urls)
+        ? (item.remote_image_urls || item.media_urls).filter(Boolean)
+        : String(item.remote_image_urls || item.media_urls || '').split(',').map((part) => part.trim()).filter(Boolean);
+      const imageEntries = Array.isArray(item.image_entries) && item.image_entries.length
+        ? item.image_entries
+        : [
+            ...localImagePaths.map((path) => ({ url: path.startsWith('/images/') ? path : `/images/${String(path).replace(/^\/+/, '').replace(/^images\//, '')}`, source: 'local' })),
+            ...remoteImageUrls.map((url) => ({ url, source: 'remote' })),
+          ];
       const handle = item.kol_handle || item.user_handle || item.author_name || item.handle || `imported_${fallbackIndex}`;
       const idPart = item.id || `${Date.now()}_${fallbackIndex}`;
       return {
@@ -225,6 +237,11 @@ createApp({
         posted_at: item.posted_at || item.created_at || item.publish_time || null,
         text,
         image_urls: normalizedImages,
+        image_entries: imageEntries,
+        local_image_paths: localImagePaths,
+        remote_image_urls: remoteImageUrls,
+        has_local_images: imageEntries.some((entry) => entry.source === 'local'),
+        has_remote_images: imageEntries.some((entry) => entry.source === 'remote'),
         likes: Number(item.likes ?? item.extra?.likes ?? 0),
         retweets: Number(item.retweets ?? item.extra?.retweets ?? 0),
         replies: Number(item.replies ?? item.extra?.replies ?? 0),
@@ -354,6 +371,14 @@ createApp({
     const closeXDetail = () => {
       state.x.detailOpen = false;
       state.x.mobilePane = 'list';
+    };
+
+    const xImageHint = (post) => {
+      if (!post) return '';
+      if (post.has_local_images && post.has_remote_images) return 'Mixed local and remote images';
+      if (post.has_local_images) return 'Using downloaded local images';
+      if (post.has_remote_images) return 'Using remote images';
+      return '';
     };
 
     const syncXSelection = () => {
@@ -835,6 +860,7 @@ createApp({
       displayYoutubeTitle,
       displayYoutubeAuthor,
       displayYoutubeTime,
+      xImageHint,
       isNotionSynced,
       formatDateTime,
       resolveMediaUrl,
@@ -1044,13 +1070,15 @@ createApp({
 
               <div v-if="xActive.image_urls && xActive.image_urls.length" class="body-card">
                 <div class="section-label">Images</div>
+                <div v-if="xImageHint(xActive)" class="muted">{{ xImageHint(xActive) }}</div>
                 <div class="image-grid">
-                  <img
-                    v-for="(img, idx) in xActive.image_urls"
-                    :key="img || idx"
-                    :src="resolveMediaUrl(img)"
-                    class="detail-image"
-                  />
+                  <div v-for="(img, idx) in (xActive.image_entries?.length ? xActive.image_entries : xActive.image_urls.map((url) => ({ url, source: 'remote' })))" :key="img.url || idx">
+                    <div class="muted">{{ img.source === 'local' ? 'Local image' : 'Remote image' }}</div>
+                    <img
+                      :src="resolveMediaUrl(img.url)"
+                      class="detail-image"
+                    />
+                  </div>
                 </div>
               </div>
 

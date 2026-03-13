@@ -191,6 +191,8 @@ def resolve_image_reference(value: str) -> str:
         return value
 
     normalized = safe_relative_path(value)
+    if normalized.startswith("images/"):
+        normalized = normalized[len("images/") :]
     if not normalized:
         return ""
 
@@ -638,8 +640,9 @@ def hydrate_x_post_content(url: str, fallback_text: str, fallback_images=None):
     if not row:
         return fallback_text, list(fallback_images or [])
     text = row.get("text") or row.get("full_text") or row.get("content_raw") or fallback_text
-    image_values = row.get("image_urls") or row.get("media_urls") or row.get("local_media_paths") or row.get("media_paths") or []
-    images = [resolved for resolved in (resolve_image_reference(v) for v in split_possible_list(image_values)) if resolved]
+    local_values = row.get("local_media_paths") or []
+    remote_values = row.get("image_urls") or row.get("media_urls") or row.get("media_paths") or []
+    images = build_image_urls(split_possible_list(local_values), split_possible_list(remote_values))
     return text or fallback_text, images or list(fallback_images or [])
 
 
@@ -668,13 +671,34 @@ def normalize_local_media_paths(paths):
     normalized = []
     for path in paths or []:
         if path:
-            normalized.append(path.replace("\\", "/"))
+            value = path.replace("\\", "/").lstrip("/")
+            if value.startswith("images/"):
+                value = value[len("images/") :]
+            normalized.append(value)
     return normalized
 
 
 def build_image_urls(local_paths, remote_urls):
     local_urls = [f"/images/{path}" for path in normalize_local_media_paths(local_paths)]
     return local_urls or list(remote_urls or [])
+
+
+def build_image_entries(local_paths, remote_urls):
+    entries = []
+    seen = set()
+
+    for path in normalize_local_media_paths(local_paths):
+        url = f"/images/{path}"
+        if url not in seen:
+            entries.append({"url": url, "source": "local"})
+            seen.add(url)
+
+    for url in remote_urls or []:
+        if url and url not in seen:
+            entries.append({"url": url, "source": "remote"})
+            seen.add(url)
+
+    return entries
 
 
 def save_images_for_item(item_dict):
@@ -700,7 +724,7 @@ def save_images_for_item(item_dict):
                     with open(file_path, "wb") as f:
                         f.write(resp.content)
             if os.path.exists(file_path):
-                rel_path = os.path.relpath(file_path, DATA_ROOT_DIR).replace("\\", "/")
+                rel_path = os.path.relpath(file_path, IMAGES_DIR).replace("\\", "/")
                 local_paths.append(rel_path)
         except Exception:
             continue
@@ -902,9 +926,12 @@ def list_posts():
 
     result = []
     for i in items:
-        fallback_images = build_image_urls(split_csv(i.local_image_paths), split_csv(i.image_urls))
+        local_image_paths = normalize_local_media_paths(split_csv(i.local_image_paths))
+        remote_image_urls = split_csv(i.image_urls)
+        fallback_images = build_image_urls(local_image_paths, remote_image_urls)
         hydrated_text, hydrated_images = hydrate_x_post_content(i.url, i.text, fallback_images)
         extra = parse_extra((knowledge_by_url.get(i.url).extra_json if knowledge_by_url.get(i.url) else ""))
+        image_entries = build_image_entries(local_image_paths, remote_image_urls)
         result.append({
             "id": i.id,
             "kol_handle": i.kol_handle,
@@ -914,8 +941,11 @@ def list_posts():
             "text": hydrated_text,
             "translated_text": None,
             "image_urls": hydrated_images,
-            "local_image_paths": split_csv(i.local_image_paths),
-            "remote_image_urls": split_csv(i.image_urls),
+            "image_entries": image_entries,
+            "local_image_paths": local_image_paths,
+            "remote_image_urls": remote_image_urls,
+            "has_local_images": any(entry["source"] == "local" for entry in image_entries),
+            "has_remote_images": any(entry["source"] == "remote" for entry in image_entries),
             "likes": i.likes,
             "retweets": i.retweets,
             "replies": i.replies,
