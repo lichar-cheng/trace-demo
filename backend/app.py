@@ -1247,6 +1247,31 @@ def youtube_items():
     return ok([serialize_knowledge(i) for i in items])
 
 
+@api.post("/youtube/delete")
+def youtube_delete():
+    payload = request.get_json(silent=True) or {}
+    item_ids = []
+    for item_id in payload.get("item_ids", []):
+        try:
+            item_ids.append(int(item_id))
+        except (TypeError, ValueError):
+            continue
+
+    if not item_ids:
+        return ok({"error": "item_ids_required"}, 400)
+
+    with db_session() as db:
+        items = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "youtube",
+            KnowledgeItem.id.in_(item_ids),
+        ).all()
+        deleted = len(items)
+        for item in items:
+            db.delete(item)
+
+    return ok({"deleted": deleted, "requested": len(item_ids)})
+
+
 @api.post("/youtube/analyze")
 def youtube_analyze():
     payload, err = parse_payload(YoutubeAnalyzePayload)
