@@ -750,6 +750,36 @@ def remove_local_media_files(local_paths):
     return deleted
 
 
+def resolve_project_path(path_value: str) -> str:
+    if not path_value:
+        return ""
+    raw = str(path_value).strip()
+    if not raw:
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return ""
+    if os.path.isabs(raw):
+        return os.path.normpath(raw)
+    return os.path.normpath(os.path.join(PROJECT_ROOT, raw))
+
+
+def remove_file_paths(paths):
+    deleted = []
+    seen = set()
+    for path_value in paths or []:
+        abs_path = resolve_project_path(path_value)
+        if not abs_path or abs_path in seen:
+            continue
+        seen.add(abs_path)
+        try:
+            if os.path.isfile(abs_path):
+                os.remove(abs_path)
+                deleted.append(abs_path)
+        except Exception:
+            continue
+    return deleted
+
+
 def remove_items_from_collect_files(urls):
     removed = 0
     for file_path in Path(DATA_ROOT_DIR).glob(COLLECT_FILE_PATTERN):
@@ -1299,11 +1329,31 @@ def youtube_delete():
             KnowledgeItem.source_type == "youtube",
             KnowledgeItem.id.in_(item_ids),
         ).all()
+
+        file_paths = []
+        for item in items:
+            extra_payload = parse_extra(item.extra_json)
+            file_paths.extend([
+                extra_payload.get("txt_path"),
+                extra_payload.get("audio_path"),
+            ])
+            file_paths.extend(split_csv(item.local_media_paths))
+            for media_path in split_csv(item.media_paths):
+                if media_path and not media_path.startswith("http://") and not media_path.startswith("https://"):
+                    file_paths.append(media_path)
+
         deleted = len(items)
         for item in items:
             db.delete(item)
 
-    return ok({"deleted": deleted, "requested": len(item_ids)})
+    deleted_files = remove_file_paths(file_paths)
+
+    return ok({
+        "deleted": deleted,
+        "requested": len(item_ids),
+        "deleted_files": len(deleted_files),
+        "deleted_file_paths": deleted_files,
+    })
 
 
 @api.post("/youtube/analyze")
