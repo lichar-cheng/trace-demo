@@ -231,8 +231,8 @@ button {
 .item {
   border: 1px solid rgba(111, 103, 91, 0.14);
   border-radius: 16px;
-  padding: 14px;
-  margin-bottom: 12px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
   background: rgba(255, 255, 255, 0.65);
 }
 
@@ -242,18 +242,19 @@ button {
 }
 
 .title {
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 600;
 }
 
 .muted {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .text {
   color: #312d28;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 1.45;
 }
 
 .clamp-3,
@@ -295,6 +296,7 @@ button {
 
 .post-row {
   cursor: pointer;
+  gap: 4px;
 }
 
 .row-top,
@@ -320,23 +322,23 @@ button {
 }
 
 .detail-hero {
-  gap: 14px;
+  gap: 10px;
 }
 
 .detail-hero h2 {
   margin: 0 0 4px;
-  font-size: 34px;
+  font-size: 22px;
 }
 
 .body-card {
   background: var(--panel-strong);
   border: 1px solid rgba(111, 103, 91, 0.14);
   border-radius: 18px;
-  padding: 16px;
+  padding: 12px;
 }
 
 .section-label {
-  margin-bottom: 10px;
+  margin-bottom: 8px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -345,14 +347,14 @@ button {
 
 .body-copy {
   margin: 0;
-  font-size: 24px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.55;
   white-space: pre-wrap;
 }
 
 .subtitle-copy {
-  font-size: 18px;
-  line-height: 1.7;
+  font-size: 14px;
+  line-height: 1.55;
 }
 
 .image-grid {
@@ -363,7 +365,7 @@ button {
 
 .detail-image {
   width: 100%;
-  min-height: 220px;
+  min-height: 180px;
   object-fit: cover;
   border-radius: 16px;
   background: #ede6db;
