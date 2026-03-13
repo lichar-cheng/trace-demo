@@ -60,7 +60,8 @@ DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CORS_ALLOWED_ORIGINS = [item.strip() for item in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",") if item.strip()]
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
-DATA_ROOT_DIR = os.getenv("DATA_ROOT_DIR", str(Path(BASE_DIR).parent / "data" / "x"))
+RAW_DATA_ROOT_DIR = os.getenv("DATA_ROOT_DIR", str(Path(PROJECT_ROOT) / "data" / "x"))
+DATA_ROOT_DIR = RAW_DATA_ROOT_DIR if os.path.isabs(RAW_DATA_ROOT_DIR) else os.path.abspath(os.path.join(PROJECT_ROOT, RAW_DATA_ROOT_DIR))
 UPLOAD_DIR = os.path.join(DATA_ROOT_DIR, "uploads")
 IMAGES_DIR = os.path.join(DATA_ROOT_DIR, "images")
 TRASH_DIR = os.path.join(DATA_ROOT_DIR, "trash")
@@ -692,6 +693,9 @@ def build_image_entries(local_paths, remote_urls):
         if url not in seen:
             entries.append({"url": url, "source": "local"})
             seen.add(url)
+
+    if entries:
+        return entries
 
     for url in remote_urls or []:
         if url and url not in seen:
