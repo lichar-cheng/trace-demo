@@ -62,15 +62,18 @@ class YoutubeDownloader:
 
         output_dir = Path(self.config.audio_output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        outtmpl = str(output_dir / "%(title)s_%(id)s.%(ext)s")
-
-        ydl_opts = {
-            "format": "bestaudio/best",
-            "outtmpl": outtmpl,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "ignoreerrors": True,
+        YTDL_OPTS = {
+            "ffmpeg_location": self.config.ffmpeg_location,
+            'format': 'bestaudio/best',
+            'outtmpl': f'{OUTPUT_DIR}/%(channel)s_%(upload_date)s_%(id)s.%(ext)s',
+            'sleep_interval_requests': 1.5,
+            'ignoreerrors': True,
+            'quiet': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'm4a',
+                'preferredquality': '192',
+            }],
         }
 
         try:
