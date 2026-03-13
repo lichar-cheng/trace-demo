@@ -14,6 +14,7 @@ class YoutubePipelineConfig:
         "https": os.getenv("YOUTUBE_PROXY_HTTPS", ""),
     })
     audio_output_dir: str = os.getenv("YOUTUBE_AUDIO_DIR", "./data/youtube/audio_lake")
+    ffmpeg_location: str = os.getenv("YOUTUBE_FFMPEG_DIR", "./scripts/ffmpeg/bin")
     transcribe_output_dir: str = os.getenv("YOUTUBE_TRANSCRIBE_DIR", "./data/youtube/transcribe_output")
     model_size: str = os.getenv("WHISPER_MODEL_SIZE", "base")
     language: str = os.getenv("WHISPER_LANGUAGE", "zh")
