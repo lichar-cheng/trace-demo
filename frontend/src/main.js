@@ -48,6 +48,7 @@ createApp({
         selectedDirectories: [],
         mobilePane: 'list',
         detailOpen: false,
+        isMobile: false,
         localMediaMap: {},
       },
       youtube: {
@@ -61,6 +62,7 @@ createApp({
         activeId: null,
         mobilePane: 'list',
         detailOpen: false,
+        isMobile: false,
         editMode: false,
         editDraft: '',
       },
@@ -78,6 +80,14 @@ createApp({
         symbol: 'BTCUSDT',
         timeframe: '4h',
         image_path: '',
+        selectedIds: [],
+        batchId: '',
+        tgMessage: '',
+        manualTitle: 'manual chart',
+        manualNote: '',
+        manualCapturedAt: new Date().toISOString().slice(0, 16),
+        manualPageUrl: '',
+        manualFileName: '',
         items: [],
       },
       topic: {
@@ -209,6 +219,27 @@ createApp({
     };
 
     const isNotionSynced = (item) => !!(item?.notion_synced_at || item?.extra?.notion_synced_at);
+
+    const CHART_BATCH_URLS = [
+      'https://www.coinglass.com/zh/pro/i/spot-bitcoin-etf-total-net-flows',
+      'https://www.coinglass.com/zh/pro/i/coinbase-bitcoin-premium-index',
+      'https://www.coinglass.com/zh/large-orderbook-statistics',
+      'https://www.coinglass.com/zh/orderbook-pressure',
+    ];
+
+    const chartImageUrl = (item) => {
+      if (!item) return '';
+      const first = item.local_media_paths?.[0] || item.media_paths?.[0] || item.remote_media_paths?.[0] || '';
+      if (!first) return '';
+      return resolveMediaUrl(first.startsWith('/images/') ? first : (first.startsWith('data/') ? `/images/${first.slice(5)}` : first));
+    };
+
+    const chartSelectedItems = computed(() => {
+      const selected = new Set(state.charts.selectedIds);
+      return state.charts.items.filter((item) => selected.has(item.id));
+    });
+
+    const chartQuadItems = computed(() => chartSelectedItems.value.slice(0, 4));
 
     const normalizeImportedPost = (item, fallbackIndex = 0) => {
       const text = item.text || item.full_text || item.content_raw || item.content_cleaned || item.summary || '';
@@ -409,7 +440,9 @@ createApp({
       await loadXSourceFiles();
       syncXSelection();
       syncXActive(currentUrl);
-      state.x.mobilePane = 'list';
+      if (!state.x.isMobile) {
+        state.x.mobilePane = 'list';
+      }
       if (state.x.activeIndex === 0 && !xFiltered.value.length) {
         state.x.detailOpen = false;
       }
@@ -530,7 +563,9 @@ createApp({
       state.youtube.items = data;
       syncYoutubeSelection();
       state.youtube.activeId = data.some((item) => item.id === currentId) ? currentId : (youtubeFiltered.value[0]?.id || null);
-      state.youtube.mobilePane = 'list';
+      if (!state.youtube.isMobile) {
+        state.youtube.mobilePane = 'list';
+      }
       state.youtube.detailOpen = false;
       state.youtube.editMode = false;
       state.youtube.editDraft = '';
@@ -677,6 +712,17 @@ createApp({
       state.youtube.editDraft = '';
     };
 
+    const updateViewportFlags = () => {
+      const isMobile = window.innerWidth <= 900;
+      state.x.isMobile = isMobile;
+      state.youtube.isMobile = isMobile;
+      if (!isMobile) {
+        state.x.mobilePane = 'list';
+        state.youtube.mobilePane = 'list';
+      }
+    };
+
+
     const loadCrypto = async () => safeRun(async () => {
       const { data } = await api.cryptoList({ limit: 100 });
       state.crypto.items = data;
@@ -714,6 +760,8 @@ createApp({
     const loadCharts = async () => safeRun(async () => {
       const { data } = await api.chartList({ limit: 100 });
       state.charts.items = data;
+      const allowed = new Set(data.map((item) => item.id));
+      state.charts.selectedIds = state.charts.selectedIds.filter((id) => allowed.has(id));
       setStatus(`Loaded ${data.length} chart snapshots`);
     });
 
@@ -733,6 +781,74 @@ createApp({
       await api.chartAnalyze(item.id);
       await loadCharts();
       setStatus(`Chart #${item.id} analyzed`);
+    });
+
+
+    const handleChartManualUpload = async (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      await safeRun(async () => {
+        const formData = new FormData();
+        formData.append('image', file, file.name);
+        formData.append('title', state.charts.manualTitle || 'manual chart');
+        formData.append('note', state.charts.manualNote || '');
+        formData.append('platform', state.charts.platform || 'manual');
+        formData.append('symbol', state.charts.symbol || '');
+        formData.append('timeframe', state.charts.timeframe || '4h');
+        formData.append('page_url', state.charts.manualPageUrl || state.charts.page_url || '');
+        if (state.charts.manualCapturedAt) {
+          formData.append('captured_at', new Date(state.charts.manualCapturedAt).toISOString());
+        }
+        const { data } = await api.chartManualUpload(formData);
+        state.charts.manualFileName = file.name;
+        await loadCharts();
+        setStatus(`Manual chart uploaded #${data.item_id}`);
+      });
+    };
+
+
+    const captureCoinglassBatch = async () => safeRun(async () => {
+      const { data } = await api.chartCaptureBatch({
+        urls: CHART_BATCH_URLS,
+        timeframe: state.charts.timeframe || '4h',
+        platform: 'coinglass',
+        symbol: 'batch',
+      });
+      state.charts.batchId = data.batch_id || '';
+      await loadCharts();
+      const ids = (data.results || []).map((row) => row.item_id).filter(Boolean);
+      state.charts.selectedIds = ids.slice(0, 4);
+      setStatus(`Batch captured ${data.captured}/${data.requested} charts`);
+    });
+
+    const toggleChartSelection = (itemId) => {
+      const selected = new Set(state.charts.selectedIds);
+      if (selected.has(itemId)) {
+        selected.delete(itemId);
+      } else {
+        selected.add(itemId);
+      }
+      state.charts.selectedIds = state.charts.items.map((item) => item.id).filter((id) => selected.has(id));
+    };
+
+    const selectLatestFourCharts = () => {
+      state.charts.selectedIds = state.charts.items.slice(0, 4).map((item) => item.id);
+    };
+
+    const pushChartsToTg = async () => safeRun(async () => {
+      if (!state.charts.selectedIds.length) {
+        setStatus('Select chart snapshots first');
+        return;
+      }
+      const ids = state.charts.selectedIds.slice(0, 4);
+      const { data } = await api.chartPushTg({
+        item_ids: ids,
+        message: state.charts.tgMessage || '',
+        include_analysis: true,
+      });
+      await loadCharts();
+      setStatus(`Pushed ${data.pushed || 0} chart snapshot(s) to TG`);
     });
 
     const loadTopic = async () => safeRun(async () => {
@@ -842,6 +958,8 @@ createApp({
     };
 
     onMounted(async () => {
+      updateViewportFlags();
+      window.addEventListener('resize', updateViewportFlags);
       await checkAuth();
       if (state.auth.loggedIn) {
         await loadX();
@@ -904,6 +1022,14 @@ createApp({
       pullCrypto,
       backfillCrypto,
       captureChart,
+      captureCoinglassBatch,
+      handleChartManualUpload,
+      toggleChartSelection,
+      selectLatestFourCharts,
+      pushChartsToTg,
+      chartImageUrl,
+      chartSelectedItems,
+      chartQuadItems,
       analyzeChart,
       createTopic,
       analyzeTopic,
@@ -1053,6 +1179,9 @@ createApp({
                 <div class="muted">{{ formatDateTime(post.posted_at || post.created_at) }}</div>
                 <div class="muted">@{{ post.kol_handle }}</div>
                 <div class="muted" v-if="post.sourceDirectoryLabel && post.sourceDirectoryLabel !== 'database'">{{ post.sourceDirectoryLabel }}</div>
+                <div class="badge-row">
+                  <span v-if="isNotionSynced(post)" class="badge">Notion Synced</span>
+                </div>
                 <div class="text clamp-3">{{ post.text }}</div>
               </div>
             </div>
@@ -1155,6 +1284,7 @@ createApp({
                 <div class="badge-row">
                   <span class="badge">{{ item.analysis_status || 'pending' }}</span>
                   <span class="badge">{{ displayYoutubeTime(item) || 'Unknown time' }}</span>
+                  <span v-if="isNotionSynced(item)" class="badge">Notion Synced</span>
                 </div>
                 <div class="text clamp-3">{{ item.content_raw || item.content_cleaned || item.analysis_result || 'No transcript yet.' }}</div>
               </div>
@@ -1236,16 +1366,54 @@ createApp({
             <input v-model="state.charts.symbol" placeholder="Symbol" style="max-width: 140px" />
             <input v-model="state.charts.timeframe" placeholder="Timeframe" style="max-width: 120px" />
             <button class="action primary" @click="captureChart">Capture</button>
+            <button class="action primary" @click="captureCoinglassBatch">Capture Coinglass 4h Batch</button>
+            <button class="action" @click="selectLatestFourCharts">Select Latest 4</button>
+          </div>
+
+          <div class="toolbar">
+            <input v-model="state.charts.manualTitle" placeholder="Manual record title" style="max-width: 260px" />
+            <input v-model="state.charts.manualCapturedAt" type="datetime-local" style="max-width: 220px" />
+            <input v-model="state.charts.manualPageUrl" placeholder="Source URL (optional)" />
+            <input v-model="state.charts.manualNote" placeholder="Note / remark" />
+            <label class="action" style="cursor:pointer;">
+              Upload Image
+              <input type="file" accept="image/*" @change="handleChartManualUpload" style="display:none;" />
+            </label>
+            <span class="badge" v-if="state.charts.manualFileName">{{ state.charts.manualFileName }}</span>
+          </div>
+
+          <div class="toolbar">
+            <input v-model="state.charts.tgMessage" placeholder="TG message for this 4-chart batch" />
+            <button class="action" :disabled="!state.charts.selectedIds.length" @click="pushChartsToTg">Push Selected To TG</button>
+            <span class="badge" v-if="state.charts.batchId">Batch {{ state.charts.batchId }}</span>
+            <span class="badge">Selected {{ state.charts.selectedIds.length }}</span>
+          </div>
+
+          <div class="card" v-if="chartQuadItems.length">
+            <div class="section-label">4-grid compare canvas</div>
+            <div class="quad-grid">
+              <div class="quad-cell" v-for="item in chartQuadItems" :key="`quad-${item.id}`">
+                <div class="title">#{{ item.id }} {{ item.title }}</div>
+                <img v-if="chartImageUrl(item)" :src="chartImageUrl(item)" class="snapshot-image" />
+                <div v-else class="muted">No image captured</div>
+              </div>
+            </div>
           </div>
 
           <div class="card cards-grid">
             <div class="snapshot" v-for="item in state.charts.items" :key="item.id">
-              <div class="title">{{ item.title }}</div>
+              <div class="row-top">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <input type="checkbox" :checked="state.charts.selectedIds.includes(item.id)" @change="toggleChartSelection(item.id)" />
+                  <div class="title">{{ item.title }}</div>
+                </div>
+                <span class="badge">{{ item.analysis_status }}</span>
+              </div>
               <div class="muted">{{ item.url }}</div>
-              <div class="muted">{{ item.media_paths[0] }}</div>
+              <img v-if="chartImageUrl(item)" :src="chartImageUrl(item)" class="snapshot-image" />
+              <div v-else class="muted">{{ item.media_paths && item.media_paths[0] }}</div>
               <div class="actions-row">
                 <button class="action" @click="analyzeChart(item)">Analyze</button>
-                <span class="badge">{{ item.analysis_status }}</span>
               </div>
             </div>
           </div>

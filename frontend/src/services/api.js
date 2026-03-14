@@ -62,8 +62,11 @@ export const api = {
   cryptoList(params){ return axios.get(buildUrl('/api/crypto/metrics'), { params }); },
 
   chartCapture(payload){ return axios.post(buildUrl('/api/charts/capture'), payload); },
+  chartManualUpload(formData){ return axios.post(buildUrl('/api/charts/manual-upload'), formData, { headers: { 'Content-Type': 'multipart/form-data' } }); },
+  chartCaptureBatch(payload){ return axios.post(buildUrl('/api/charts/capture/batch'), payload); },
   chartAnalyze(item_id){ return axios.post(buildUrl('/api/charts/analyze'), { item_id }); },
   chartList(params){ return axios.get(buildUrl('/api/charts/snapshots'), { params }); },
+  chartPushTg(payload){ return axios.post(buildUrl('/api/charts/push/tg'), payload); },
 
   youtubeDelete(item_ids){ return axios.post(buildUrl('/api/youtube/delete'), { item_ids }); },
   runBackup(target_dir){ return axios.post(buildUrl('/api/backup/run'), { target_dir }); },

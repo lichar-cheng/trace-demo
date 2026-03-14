@@ -36,6 +36,19 @@ class YoutubeTranscriber:
         if os.path.exists(txt_path):
             return {"ok": True, "txt_path": txt_path, "cached": True}
 
+        try:
+            audio_size_bytes = Path(audio_path).stat().st_size
+        except OSError:
+            audio_size_bytes = 0
+        audio_size_mb = audio_size_bytes / (1024 * 1024)
+        if self.config.max_audio_size_mb and audio_size_mb > float(self.config.max_audio_size_mb):
+            return {
+                "ok": False,
+                "reason": "audio_file_too_large",
+                "audio_size_mb": round(audio_size_mb, 2),
+                "max_audio_size_mb": self.config.max_audio_size_mb,
+            }
+
         segments, info = model.transcribe(
             audio_path,
             language=self.config.language,
