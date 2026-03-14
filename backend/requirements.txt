@@ -7,3 +7,5 @@ pydantic==2.9.2
 requests==2.32.3
 python-dotenv==1.0.1
 yt-dlp==2025.2.19
+
+playwright==1.52.0
