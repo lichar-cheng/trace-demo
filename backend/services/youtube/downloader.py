@@ -1,5 +1,6 @@
 import re
 import traceback
+from typing import Any
 from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs, urlparse
@@ -16,6 +17,21 @@ class YoutubeDownloader:
     def __init__(self, config: YoutubePipelineConfig):
         self.config = config
         self.last_hit_cache = False
+        self.last_error = ""
+
+
+    def _fetch_video_info(self, ydl: Any, url: str) -> Optional[dict]:
+        try:
+            info = ydl.extract_info(url, download=False)
+            if not info:
+                return None
+            if isinstance(info, dict) and info.get("_type") == "playlist":
+                entries = info.get("entries") or []
+                return entries[0] if entries else None
+            return info
+        except Exception as exc:
+            log_downloader("fetch_video_info_failed", url=url, error=str(exc))
+            return None
 
     def _extract_video_id(self, url: str) -> str:
         try:
@@ -59,6 +75,7 @@ class YoutubeDownloader:
 
     def download_audio(self, url: str) -> Optional[str]:
         self.last_hit_cache = False
+        self.last_error = ""
         video_id = self._extract_video_id(url)
         log_downloader("download_start", url=url, video_id=video_id, audio_output_dir=self.config.audio_output_dir)
 
@@ -72,6 +89,7 @@ class YoutubeDownloader:
         except Exception as exc:
             log_downloader("yt_dlp_import_failed", error=str(exc))
             print(traceback.format_exc(), flush=True)
+            self.last_error = "yt_dlp_import_failed"
             return None
 
         output_dir = Path(self.config.audio_output_dir)
@@ -100,16 +118,33 @@ class YoutubeDownloader:
         filename = None
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                pre_info = self._fetch_video_info(ydl, url)
+                if not pre_info:
+                    log_downloader("extract_info_empty", url=url)
+                    self.last_error = "extract_info_empty"
+                    return None
+                duration = int(pre_info.get("duration") or 0)
+                if duration and duration > int(self.config.max_video_duration_seconds):
+                    log_downloader(
+                        "video_too_long",
+                        url=url,
+                        duration=duration,
+                        limit=self.config.max_video_duration_seconds,
+                    )
+                    self.last_error = "video_too_long"
+                    return None
                 info = ydl.extract_info(url, download=True)
                 if not info:
-                    log_downloader("extract_info_empty", url=url)
+                    log_downloader("extract_info_empty_after_download", url=url)
+                    self.last_error = "extract_info_empty_after_download"
                     return None
                 downloaded_id = info.get("id") or video_id
                 filename = ydl.prepare_filename(info)
-                log_downloader("download_finished", url=url, downloaded_id=downloaded_id, prepared_filename=filename)
+                log_downloader("download_finished", url=url, downloaded_id=downloaded_id, prepared_filename=filename, duration=duration)
         except Exception as exc:
             log_downloader("download_exception", url=url, error=str(exc))
             print(traceback.format_exc(), flush=True)
+            self.last_error = "download_exception"
             return None
 
         if filename:
@@ -129,5 +164,6 @@ class YoutubeDownloader:
             log_downloader("fallback_found", path=fallback, downloaded_id=downloaded_id)
         else:
             log_downloader("fallback_missing", downloaded_id=downloaded_id, output_dir=str(output_dir))
+            self.last_error = self.last_error or "fallback_missing"
         self.last_hit_cache = bool(fallback)
         return fallback

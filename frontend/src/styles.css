@@ -533,7 +533,8 @@ button {
   .youtube-layout,
   .cards-grid,
   .two-panels,
-  .image-grid {
+  .image-grid,
+  .quad-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -656,4 +657,25 @@ button {
   .detail-image {
     min-height: 180px;
   }
+}
+
+
+.snapshot-image {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  margin-top: 8px;
+}
+
+.quad-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.quad-cell {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(255,255,255,0.55);
 }

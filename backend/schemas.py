@@ -123,5 +123,17 @@ class ChartAnalyzePayload(BaseModel):
     item_id: int
 
 
+class ChartBatchCapturePayload(BaseModel):
+    urls: List[str] = Field(default_factory=list)
+    timeframe: str = "4h"
+    platform: str = "coinglass"
+    symbol: Optional[str] = None
+
+
+class ChartPushTgPayload(BaseModel):
+    item_ids: List[int] = Field(default_factory=list)
+    message: str = ""
+
+
 class BackupPayload(BaseModel):
     target_dir: str = "data/backup"

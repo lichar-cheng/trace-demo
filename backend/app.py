@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from models import SessionLocal, KolPost, BrowseLog, KnowledgeItem, Topic, EntityProfile, init_db
 from services.youtube import YoutubePipeline
+from services.charts import capture_chart_page
 from schemas import (
     KolPostList,
     BrowseLogList,
@@ -33,6 +34,8 @@ from schemas import (
     CryptoBackfillPayload,
     ChartCapturePayload,
     ChartAnalyzePayload,
+    ChartBatchCapturePayload,
+    ChartPushTgPayload,
     BackupPayload,
 )
 
@@ -66,6 +69,12 @@ UPLOAD_DIR = os.path.join(DATA_ROOT_DIR, "uploads")
 IMAGES_DIR = os.path.join(DATA_ROOT_DIR, "images")
 TRASH_DIR = os.path.join(DATA_ROOT_DIR, "trash")
 COLLECT_FILE_PATTERN = "x_collect_*.json"
+COINGLASS_CHART_URLS = [
+    "https://www.coinglass.com/zh/pro/i/spot-bitcoin-etf-total-net-flows",
+    "https://www.coinglass.com/zh/pro/i/coinbase-bitcoin-premium-index",
+    "https://www.coinglass.com/zh/large-orderbook-statistics",
+    "https://www.coinglass.com/zh/orderbook-pressure",
+]
 for _d in [DATA_ROOT_DIR, UPLOAD_DIR, IMAGES_DIR, TRASH_DIR]:
     os.makedirs(_d, exist_ok=True)
 
@@ -183,6 +192,19 @@ def split_possible_list(value):
     if isinstance(value, str):
         return [part.strip() for part in value.split(",") if part.strip()]
     return []
+
+
+def to_public_media_url(path_value: str) -> str:
+    if not path_value:
+        return ""
+    norm = str(path_value).replace("\\", "/")
+    if norm.startswith("http://") or norm.startswith("https://"):
+        return norm
+    if norm.startswith("/images/"):
+        return norm
+    if norm.startswith("data/"):
+        return "/images/" + norm[5:]
+    return "/images/" + norm.lstrip("/")
 
 
 def resolve_image_reference(value: str) -> str:
@@ -1385,7 +1407,21 @@ def youtube_analyze():
         return ok({"analyzed": 0, "results": [], "reason": "no_matching_items"})
 
     pipeline = YoutubePipeline()
-    results = pipeline.process_urls([item["url"] for item in selected_data])
+    try:
+        results = pipeline.process_urls([item["url"] for item in selected_data])
+    except Exception as exc:
+        log_youtube("analyze_pipeline_exception", error=str(exc))
+        results = [
+            {
+                "url": item["url"],
+                "downloaded": False,
+                "transcribed": False,
+                "cached_audio": False,
+                "download_reason": "pipeline_exception",
+                "transcribe": {"ok": False, "reason": f"pipeline_exception: {exc}"},
+            }
+            for item in selected_data
+        ]
     result_by_url = {row["url"]: row for row in results}
     log_youtube("analyze_pipeline_results", results=results)
 
@@ -1476,7 +1512,7 @@ def youtube_analyze():
                         "transcribed": row.get("transcribed", False),
                         "audio_path": row.get("audio_path"),
                         "txt_path": txt_path,
-                        "reason": transcribe.get("reason", "download_or_transcribe_failed"),
+                        "reason": transcribe.get("reason") or row.get("download_reason") or "download_or_transcribe_failed",
                     },
                     ensure_ascii=False,
                 )
@@ -1912,6 +1948,98 @@ def chart_capture():
             )
         )
     return ok({"status": "captured"})
+
+
+@api.post("/charts/capture/batch")
+def chart_capture_batch():
+    payload, err = parse_payload(ChartBatchCapturePayload)
+    if err:
+        return err
+
+    urls = [u.strip() for u in (payload.urls or []) if str(u).strip()]
+    if not urls:
+        urls = COINGLASS_CHART_URLS.copy()
+
+    timeframe = (payload.timeframe or "4h").strip() or "4h"
+    batch_id = datetime.utcnow().strftime("coinglass_%Y%m%d_%H%M%S")
+    results = []
+
+    with db_session() as db:
+        for idx, url in enumerate(urls, start=1):
+            image_rel = f"data/charts/snapshots/{batch_id}_{idx}.png"
+            image_abs = str((Path(BASE_DIR).parent / image_rel).resolve())
+            ok_capture, detail = capture_chart_page(url, image_abs, timeframe=timeframe)
+
+            item = KnowledgeItem(
+                source_type="chart_snapshot",
+                source_subtype=payload.platform or "coinglass",
+                title=f"{payload.platform or 'coinglass'} batch#{idx} {timeframe}",
+                url=url,
+                media_paths=image_rel,
+                publish_time=datetime.utcnow(),
+                tags_primary="chart",
+                source_file="api:charts_capture_batch",
+                analysis_status="done" if ok_capture else "failed",
+                analysis_result="captured" if ok_capture else detail,
+                extra_json=json.dumps(
+                    {
+                        "timeframe": timeframe,
+                        "symbol": payload.symbol,
+                        "batch_id": batch_id,
+                        "capture_detail": detail,
+                        "capture_ok": ok_capture,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            db.add(item)
+            db.flush()
+            results.append(
+                {
+                    "item_id": item.id,
+                    "url": url,
+                    "image_path": image_rel,
+                    "capture_ok": ok_capture,
+                    "detail": detail,
+                    "batch_id": batch_id,
+                }
+            )
+
+    return ok({"batch_id": batch_id, "requested": len(urls), "captured": sum(1 for row in results if row["capture_ok"]), "results": results})
+
+
+@api.post("/charts/push/tg")
+def charts_push_tg():
+    payload, err = parse_payload(ChartPushTgPayload)
+    if err:
+        return err
+
+    if not payload.item_ids:
+        return ok({"error": "item_ids_required"}, 400)
+
+    pushed = []
+    with db_session() as db:
+        items = db.query(KnowledgeItem).filter(
+            KnowledgeItem.source_type == "chart_snapshot",
+            KnowledgeItem.id.in_(payload.item_ids),
+        ).all()
+
+        for item in items:
+            item.push_status = "pushed"
+            extra = parse_extra(item.extra_json)
+            extra["tg_pushed_at"] = datetime.utcnow().isoformat()
+            if payload.message:
+                extra["tg_message"] = payload.message
+            item.extra_json = json.dumps(extra, ensure_ascii=False)
+            pushed.append(
+                {
+                    "item_id": item.id,
+                    "url": item.url,
+                    "image_url": to_public_media_url((split_csv(item.media_paths) or [""])[0]),
+                }
+            )
+
+    return ok({"ok": True, "pushed": len(pushed), "items": pushed, "message": payload.message})
 
 
 @api.post("/charts/analyze")

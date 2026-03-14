@@ -20,6 +20,8 @@ class YoutubePipelineConfig:
     language: str = os.getenv("WHISPER_LANGUAGE", "zh")
     device: str = os.getenv("WHISPER_DEVICE", "auto")
     compute_type: str = os.getenv("WHISPER_COMPUTE_TYPE", "auto")
+    max_video_duration_seconds: int = int(os.getenv("YOUTUBE_MAX_VIDEO_DURATION_SECONDS", "5400") or 5400)
+    max_audio_size_mb: int = int(os.getenv("YOUTUBE_MAX_AUDIO_SIZE_MB", "200") or 200)
 
     def normalize(self):
         Path(self.audio_output_dir).mkdir(parents=True, exist_ok=True)
