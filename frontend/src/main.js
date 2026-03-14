@@ -48,6 +48,7 @@ createApp({
         selectedDirectories: [],
         mobilePane: 'list',
         detailOpen: false,
+        isMobile: false,
         localMediaMap: {},
       },
       youtube: {
@@ -61,6 +62,7 @@ createApp({
         activeId: null,
         mobilePane: 'list',
         detailOpen: false,
+        isMobile: false,
         editMode: false,
         editDraft: '',
       },
@@ -409,7 +411,9 @@ createApp({
       await loadXSourceFiles();
       syncXSelection();
       syncXActive(currentUrl);
-      state.x.mobilePane = 'list';
+      if (!state.x.isMobile) {
+        state.x.mobilePane = 'list';
+      }
       if (state.x.activeIndex === 0 && !xFiltered.value.length) {
         state.x.detailOpen = false;
       }
@@ -530,7 +534,9 @@ createApp({
       state.youtube.items = data;
       syncYoutubeSelection();
       state.youtube.activeId = data.some((item) => item.id === currentId) ? currentId : (youtubeFiltered.value[0]?.id || null);
-      state.youtube.mobilePane = 'list';
+      if (!state.youtube.isMobile) {
+        state.youtube.mobilePane = 'list';
+      }
       state.youtube.detailOpen = false;
       state.youtube.editMode = false;
       state.youtube.editDraft = '';
@@ -676,6 +682,17 @@ createApp({
       state.youtube.editMode = false;
       state.youtube.editDraft = '';
     };
+
+    const updateViewportFlags = () => {
+      const isMobile = window.innerWidth <= 900;
+      state.x.isMobile = isMobile;
+      state.youtube.isMobile = isMobile;
+      if (!isMobile) {
+        state.x.mobilePane = 'list';
+        state.youtube.mobilePane = 'list';
+      }
+    };
+
 
     const loadCrypto = async () => safeRun(async () => {
       const { data } = await api.cryptoList({ limit: 100 });
@@ -842,6 +859,8 @@ createApp({
     };
 
     onMounted(async () => {
+      updateViewportFlags();
+      window.addEventListener('resize', updateViewportFlags);
       await checkAuth();
       if (state.auth.loggedIn) {
         await loadX();
@@ -1053,6 +1072,9 @@ createApp({
                 <div class="muted">{{ formatDateTime(post.posted_at || post.created_at) }}</div>
                 <div class="muted">@{{ post.kol_handle }}</div>
                 <div class="muted" v-if="post.sourceDirectoryLabel && post.sourceDirectoryLabel !== 'database'">{{ post.sourceDirectoryLabel }}</div>
+                <div class="badge-row">
+                  <span v-if="isNotionSynced(post)" class="badge">Notion Synced</span>
+                </div>
                 <div class="text clamp-3">{{ post.text }}</div>
               </div>
             </div>
@@ -1155,6 +1177,7 @@ createApp({
                 <div class="badge-row">
                   <span class="badge">{{ item.analysis_status || 'pending' }}</span>
                   <span class="badge">{{ displayYoutubeTime(item) || 'Unknown time' }}</span>
+                  <span v-if="isNotionSynced(item)" class="badge">Notion Synced</span>
                 </div>
                 <div class="text clamp-3">{{ item.content_raw || item.content_cleaned || item.analysis_result || 'No transcript yet.' }}</div>
               </div>

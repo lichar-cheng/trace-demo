@@ -30,6 +30,7 @@ class YoutubePipeline:
                 "downloaded": False,
                 "transcribed": False,
                 "cached_audio": False,
+                "download_reason": "",
             }
             print(f"[youtube.pipeline] process_start url={url!r}", flush=True)
             audio = self.downloader.download_audio(url)
@@ -50,8 +51,10 @@ class YoutubePipeline:
                     flush=True,
                 )
             else:
-                row["transcribe"] = {"ok": False, "reason": "audio_not_found_or_download_failed"}
-                print(f"[youtube.pipeline] audio_missing url={url!r}", flush=True)
+                download_reason = getattr(self.downloader, "last_error", "") or "audio_not_found_or_download_failed"
+                row["download_reason"] = download_reason
+                row["transcribe"] = {"ok": False, "reason": download_reason}
+                print(f"[youtube.pipeline] audio_missing url={url!r} reason={download_reason!r}", flush=True)
             results.append(row)
             time.sleep(random.uniform(sleep_min, sleep_max))
         print(f"[youtube.pipeline] process_finished total={len(results)!r}", flush=True)

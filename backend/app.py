@@ -1385,7 +1385,21 @@ def youtube_analyze():
         return ok({"analyzed": 0, "results": [], "reason": "no_matching_items"})
 
     pipeline = YoutubePipeline()
-    results = pipeline.process_urls([item["url"] for item in selected_data])
+    try:
+        results = pipeline.process_urls([item["url"] for item in selected_data])
+    except Exception as exc:
+        log_youtube("analyze_pipeline_exception", error=str(exc))
+        results = [
+            {
+                "url": item["url"],
+                "downloaded": False,
+                "transcribed": False,
+                "cached_audio": False,
+                "download_reason": "pipeline_exception",
+                "transcribe": {"ok": False, "reason": f"pipeline_exception: {exc}"},
+            }
+            for item in selected_data
+        ]
     result_by_url = {row["url"]: row for row in results}
     log_youtube("analyze_pipeline_results", results=results)
 
@@ -1476,7 +1490,7 @@ def youtube_analyze():
                         "transcribed": row.get("transcribed", False),
                         "audio_path": row.get("audio_path"),
                         "txt_path": txt_path,
-                        "reason": transcribe.get("reason", "download_or_transcribe_failed"),
+                        "reason": transcribe.get("reason") or row.get("download_reason") or "download_or_transcribe_failed",
                     },
                     ensure_ascii=False,
                 )
