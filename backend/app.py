@@ -36,6 +36,7 @@ from schemas import (
     ChartAnalyzePayload,
     ChartBatchCapturePayload,
     ChartPushTgPayload,
+    ChartManualCreatePayload,
     BackupPayload,
 )
 
@@ -1926,6 +1927,69 @@ def crypto_metrics():
     return ok([serialize_knowledge(i) for i in items])
 
 
+@api.post("/charts/manual-upload")
+def chart_manual_upload():
+    file_storage = request.files.get("image")
+    if not file_storage:
+        return ok({"error": "image_required"}, 400)
+
+    payload_data = {
+        "title": request.form.get("title", "manual chart"),
+        "note": request.form.get("note", ""),
+        "platform": request.form.get("platform", "manual"),
+        "symbol": request.form.get("symbol") or None,
+        "timeframe": request.form.get("timeframe", "4h"),
+        "page_url": request.form.get("page_url") or None,
+        "captured_at": parse_datetime_flexible(request.form.get("captured_at", "")),
+    }
+
+    try:
+        payload = ChartManualCreatePayload(**payload_data)
+    except ValidationError as e:
+        return ok({"error": "validation_error", "detail": e.errors()}, 400)
+
+    filename = safe_relative_path(file_storage.filename or "manual_chart.png")
+    suffix = Path(filename).suffix or ".png"
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+    rel_path = f"charts/manual/{stamp}{suffix}"
+    save_path = Path(IMAGES_DIR) / rel_path
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    file_storage.save(save_path)
+
+    publish_time = payload.captured_at or datetime.utcnow()
+    media_path = f"data/{rel_path}"
+
+    with db_session() as db:
+        item = KnowledgeItem(
+            source_type="chart_snapshot",
+            source_subtype=payload.platform,
+            title=payload.title,
+            content_raw=payload.note,
+            content_cleaned=payload.note,
+            url=payload.page_url,
+            media_paths=media_path,
+            publish_time=publish_time,
+            tags_primary="chart",
+            source_file="api:charts_manual_upload",
+            analysis_status="pending",
+            extra_json=json.dumps(
+                {
+                    "timeframe": payload.timeframe,
+                    "symbol": payload.symbol,
+                    "manual_upload": True,
+                    "note": payload.note,
+                    "captured_at": publish_time.isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        db.add(item)
+        db.flush()
+        item_id = item.id
+
+    return ok({"ok": True, "item_id": item_id, "image_url": f"/images/{rel_path}", "captured_at": publish_time.isoformat()})
+
+
 @api.post("/charts/capture")
 def chart_capture():
     payload, err = parse_payload(ChartCapturePayload)
@@ -1966,8 +2030,8 @@ def chart_capture_batch():
 
     with db_session() as db:
         for idx, url in enumerate(urls, start=1):
-            image_rel = f"data/charts/snapshots/{batch_id}_{idx}.png"
-            image_abs = str((Path(BASE_DIR).parent / image_rel).resolve())
+            image_rel = f"charts/snapshots/{batch_id}_{idx}.png"
+            image_abs = str((Path(IMAGES_DIR) / image_rel).resolve())
             ok_capture, detail = capture_chart_page(url, image_abs, timeframe=timeframe)
 
             item = KnowledgeItem(
@@ -1975,7 +2039,7 @@ def chart_capture_batch():
                 source_subtype=payload.platform or "coinglass",
                 title=f"{payload.platform or 'coinglass'} batch#{idx} {timeframe}",
                 url=url,
-                media_paths=image_rel,
+                media_paths=f"data/{image_rel}",
                 publish_time=datetime.utcnow(),
                 tags_primary="chart",
                 source_file="api:charts_capture_batch",
@@ -1998,7 +2062,7 @@ def chart_capture_batch():
                 {
                     "item_id": item.id,
                     "url": url,
-                    "image_path": image_rel,
+                    "image_path": f"data/{image_rel}",
                     "capture_ok": ok_capture,
                     "detail": detail,
                     "batch_id": batch_id,
@@ -2034,12 +2098,38 @@ def charts_push_tg():
             pushed.append(
                 {
                     "item_id": item.id,
+                    "title": item.title,
                     "url": item.url,
+                    "publish_time": item.publish_time.isoformat() if item.publish_time else None,
+                    "note": (item.content_raw or item.content_cleaned or "")[:300],
                     "image_url": to_public_media_url((split_csv(item.media_paths) or [""])[0]),
+                    "timeframe": extra.get("timeframe"),
                 }
             )
 
-    return ok({"ok": True, "pushed": len(pushed), "items": pushed, "message": payload.message})
+    summary_lines = ["Chart snapshots summary:"]
+    for row in pushed[:8]:
+        summary_lines.append(
+            f"- #{row['item_id']} {row.get('title') or 'chart'} | tf={row.get('timeframe') or 'n/a'} | at={row.get('publish_time') or 'n/a'}"
+        )
+        if row.get("note"):
+            summary_lines.append(f"  note: {row['note']}")
+        summary_lines.append(f"  src: {row.get('url') or row.get('image_url')}")
+    if payload.message:
+        summary_lines.append("")
+        summary_lines.append(payload.message)
+    summary_text = "\n".join(summary_lines)
+    sent_ok, sent_detail = send_telegram_message(summary_text) if payload.include_analysis else (False, "analysis_skipped")
+
+    return ok({
+        "ok": True,
+        "pushed": len(pushed),
+        "items": pushed,
+        "message": payload.message,
+        "analysis": summary_text,
+        "telegram_sent": sent_ok,
+        "telegram_detail": sent_detail,
+    })
 
 
 @api.post("/charts/analyze")

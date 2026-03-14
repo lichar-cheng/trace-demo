@@ -83,6 +83,11 @@ createApp({
         selectedIds: [],
         batchId: '',
         tgMessage: '',
+        manualTitle: 'manual chart',
+        manualNote: '',
+        manualCapturedAt: new Date().toISOString().slice(0, 16),
+        manualPageUrl: '',
+        manualFileName: '',
         items: [],
       },
       topic: {
@@ -779,6 +784,30 @@ createApp({
     });
 
 
+    const handleChartManualUpload = async (event) => {
+      const file = event.target.files?.[0];
+      event.target.value = '';
+      if (!file) return;
+      await safeRun(async () => {
+        const formData = new FormData();
+        formData.append('image', file, file.name);
+        formData.append('title', state.charts.manualTitle || 'manual chart');
+        formData.append('note', state.charts.manualNote || '');
+        formData.append('platform', state.charts.platform || 'manual');
+        formData.append('symbol', state.charts.symbol || '');
+        formData.append('timeframe', state.charts.timeframe || '4h');
+        formData.append('page_url', state.charts.manualPageUrl || state.charts.page_url || '');
+        if (state.charts.manualCapturedAt) {
+          formData.append('captured_at', new Date(state.charts.manualCapturedAt).toISOString());
+        }
+        const { data } = await api.chartManualUpload(formData);
+        state.charts.manualFileName = file.name;
+        await loadCharts();
+        setStatus(`Manual chart uploaded #${data.item_id}`);
+      });
+    };
+
+
     const captureCoinglassBatch = async () => safeRun(async () => {
       const { data } = await api.chartCaptureBatch({
         urls: CHART_BATCH_URLS,
@@ -813,7 +842,11 @@ createApp({
         return;
       }
       const ids = state.charts.selectedIds.slice(0, 4);
-      const { data } = await api.chartPushTg({ item_ids: ids, message: state.charts.tgMessage || '' });
+      const { data } = await api.chartPushTg({
+        item_ids: ids,
+        message: state.charts.tgMessage || '',
+        include_analysis: true,
+      });
       await loadCharts();
       setStatus(`Pushed ${data.pushed || 0} chart snapshot(s) to TG`);
     });
@@ -990,6 +1023,7 @@ createApp({
       backfillCrypto,
       captureChart,
       captureCoinglassBatch,
+      handleChartManualUpload,
       toggleChartSelection,
       selectLatestFourCharts,
       pushChartsToTg,
@@ -1334,6 +1368,18 @@ createApp({
             <button class="action primary" @click="captureChart">Capture</button>
             <button class="action primary" @click="captureCoinglassBatch">Capture Coinglass 4h Batch</button>
             <button class="action" @click="selectLatestFourCharts">Select Latest 4</button>
+          </div>
+
+          <div class="toolbar">
+            <input v-model="state.charts.manualTitle" placeholder="Manual record title" style="max-width: 260px" />
+            <input v-model="state.charts.manualCapturedAt" type="datetime-local" style="max-width: 220px" />
+            <input v-model="state.charts.manualPageUrl" placeholder="Source URL (optional)" />
+            <input v-model="state.charts.manualNote" placeholder="Note / remark" />
+            <label class="action" style="cursor:pointer;">
+              Upload Image
+              <input type="file" accept="image/*" @change="handleChartManualUpload" style="display:none;" />
+            </label>
+            <span class="badge" v-if="state.charts.manualFileName">{{ state.charts.manualFileName }}</span>
           </div>
 
           <div class="toolbar">

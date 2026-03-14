@@ -133,6 +133,17 @@ class ChartBatchCapturePayload(BaseModel):
 class ChartPushTgPayload(BaseModel):
     item_ids: List[int] = Field(default_factory=list)
     message: str = ""
+    include_analysis: bool = True
+
+
+class ChartManualCreatePayload(BaseModel):
+    title: str = "manual chart"
+    note: str = ""
+    platform: str = "manual"
+    symbol: Optional[str] = None
+    timeframe: str = "4h"
+    page_url: Optional[str] = None
+    captured_at: Optional[datetime] = None
 
 
 class BackupPayload(BaseModel):
